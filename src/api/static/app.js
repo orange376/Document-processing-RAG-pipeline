@@ -1,8 +1,33 @@
 /* ── State ── */
 const API = '/api/v1';
+const HISTORY_KEY = 'rag_history';
 
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+
+function getHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
+}
+function addHistory(item) {
+  const h = getHistory();
+  h.unshift({ ...item, time: Date.now() });
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 20)));
+}
+function renderHistory() {
+  const list = $('#upload-history-list');
+  if (!list) return;
+  const h = getHistory();
+  list.innerHTML = h.map(item => {
+    const cls = item.status === 'failed' ? 'fail' : item.status === 'review' ? 'review' : 'ok';
+    const label = item.status === 'failed' ? '失败' : item.status === 'review' ? '待审核' : '完成';
+    return `<div class="history-item">
+      <span>${item.name}</span>
+      <span class="h-status ${cls}">${label}</span>
+      <span class="h-time">${new Date(item.time).toLocaleTimeString()}</span>
+    </div>`;
+  }).join('');
+}
 
 /* ── Navigation ── */
 $$('.nav-item').forEach(btn => {
@@ -112,9 +137,12 @@ function showResult(type, filename, pages, chunks, indexed, status) {
         <div class="result-stat"><strong>${chunks}</strong><span>切片</span></div>
         <div class="result-stat"><strong>${indexed}</strong><span>已索引</span></div>
       </div>`;
+    addHistory({ name: filename, status });
   } else {
-    el.innerHTML = `<div class="result-filename" style="color:var(--danger)">${filename}</div><div style="font-size:13px;color:var(--text-muted);margin-top:4px">${filename}</div>`;
+    el.innerHTML = `<div class="result-filename" style="color:var(--danger)">${filename || '上传失败'}</div>`;
+    addHistory({ name: filename || 'unknown', status: 'failed' });
   }
+  renderHistory();
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -226,6 +254,7 @@ new MutationObserver(() => {
 }).observe($('#tab-review'), { attributes: true, attributeFilter: ['class'] });
 
 loadReviews();
+renderHistory();
 
 /* ── Hotkeys ── */
 document.addEventListener('keydown', e => {

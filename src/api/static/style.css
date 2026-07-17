@@ -85,6 +85,13 @@ html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Sego
 .result-stat span { font-size: 11px; color: var(--text-muted); }
 .result-filename { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .result-filename .r-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+.upload-history { margin-top: 8px; max-height: 160px; overflow-y: auto; }
+.history-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; color: var(--text-muted); }
+.history-item .h-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; }
+.history-item .h-status.ok { background: #d1fae5; color: #065f46; }
+.history-item .h-status.fail { background: #fee2e2; color: #991b1b; }
+.history-item .h-status.review { background: #fef3c7; color: #92400e; }
+.history-item .h-time { margin-left: auto; font-size: 11px; color: #94a3b8; }
 .r-status.ok { background: #d1fae5; color: #065f46; }
 .r-status.fail { background: #fee2e2; color: #991b1b; }
 .r-status.review { background: #fef3c7; color: #92400e; }
