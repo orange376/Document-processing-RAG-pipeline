@@ -64,6 +64,7 @@ async def _process_document(task_id: str, file_path: str) -> None:
         task_store[task_id]["document_id"] = result.document.doc_id
         task_store[task_id]["indexed_count"] = result.indexed_count
         task_store[task_id]["chunk_count"] = len(result.chunks)
+        task_store[task_id]["total_pages"] = result.document.total_pages
         task_store[task_id]["needs_review"] = needs_review
 
     except Exception as exc:
@@ -136,6 +137,11 @@ async def get_document_status(task_id: str) -> UploadResponse:
         task_id=task_id,
         status=task["status"],
         message=task.get("error", ""),
+        filename=task.get("filename", ""),
+        indexed_count=task.get("indexed_count", 0),
+        chunk_count=task.get("chunk_count", 0),
+        total_pages=task.get("total_pages", 0),
+        needs_review=task.get("needs_review", False),
     )
 
 

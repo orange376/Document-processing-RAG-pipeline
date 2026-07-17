@@ -11,6 +11,11 @@ class UploadResponse(BaseModel):
     task_id: str
     status: str = "processing"
     message: str = ""
+    filename: str = ""
+    indexed_count: int = 0
+    chunk_count: int = 0
+    total_pages: int = 0
+    needs_review: bool = False
 
 
 class ParseBlock(BaseModel):

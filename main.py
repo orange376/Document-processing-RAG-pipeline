@@ -38,11 +38,11 @@ def main():
         print("错误: 缺少 uvicorn，请执行: pip install uvicorn[standard]", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 RAG Pipeline API 启动: http://{args.host}:{args.port}")
-    print(f"📖 API 文档: http://{args.host}:{args.port}/docs")
-    print(f"📋 健康检查: http://{args.host}:{args.port}/api/v1/health")
+    print(f"** RAG Pipeline API 启动: http://{args.host}:{args.port}")
+    print(f"** API 文档: http://{args.host}:{args.port}/docs")
+    print(f"** 健康检查: http://{args.host}:{args.port}/api/v1/health")
     if reload:
-        print("⚡ 热重载已开启 (开发模式)")
+        print("** 热重载已开启 (开发模式)")
 
     uvicorn.run(
         "src.api.app:create_app",

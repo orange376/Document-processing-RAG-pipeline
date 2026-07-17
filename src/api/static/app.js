@@ -1,164 +1,120 @@
 /* ── State ── */
-const API_BASE = '/api/v1';
-let currentTab = 'upload';
-let healthInterval = null;
+const API = '/api/v1';
 
-/* ── DOM refs ── */
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
 
 /* ── Navigation ── */
-document.querySelectorAll('.nav-item').forEach(btn => {
+$$('.nav-item').forEach(btn => {
   btn.addEventListener('click', () => {
     const tab = btn.dataset.tab;
-    switchTab(tab);
+    $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    $$('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + tab));
+    if (tab === 'review') loadReviews();
   });
 });
 
-function switchTab(tab) {
-  currentTab = tab;
-  $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  $$('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + tab));
-}
-
-/* ── Health Check ── */
+/* ── Health ── */
 async function checkHealth() {
   try {
-    const res = await fetch(`${API_BASE}/health`);
-    const data = await res.json();
-    const dot = $('#health-dot');
-    const txt = $('#health-text');
-    if (data.status === 'ok') {
-      dot.className = 'health-dot ok';
-      txt.textContent = '服务正常';
-    } else {
-      dot.className = 'health-dot err';
-      txt.textContent = '异常';
-    }
+    const r = await fetch(`${API}/health`);
+    const d = await r.json();
+    $('#health-dot').className = 'health-dot ' + (d.status === 'ok' ? 'ok' : 'err');
+    $('#health-text').textContent = d.status === 'ok' ? '服务正常' : '异常';
   } catch {
     $('#health-dot').className = 'health-dot err';
     $('#health-text').textContent = '无法连接';
   }
 }
 checkHealth();
-healthInterval = setInterval(checkHealth, 30000);
+setInterval(checkHealth, 30000);
 
 /* ── Upload ── */
 const uploadZone = $('#upload-zone');
 const fileInput = $('#file-input');
 
 uploadZone.addEventListener('click', () => fileInput.click());
-
-uploadZone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  uploadZone.classList.add('drag-over');
-});
-uploadZone.addEventListener('dragleave', () => {
-  uploadZone.classList.remove('drag-over');
-});
-uploadZone.addEventListener('drop', (e) => {
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+uploadZone.addEventListener('drop', e => {
   e.preventDefault();
   uploadZone.classList.remove('drag-over');
   if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
 });
-
-fileInput.addEventListener('change', () => {
-  if (fileInput.files.length) handleFile(fileInput.files[0]);
-});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
 
 async function handleFile(file) {
-  const okTypes = ['.pdf', '.docx', '.doc'];
   const ext = '.' + file.name.split('.').pop().toLowerCase();
-  if (!okTypes.includes(ext)) {
-    showUploadResult('error', `不支持的文件格式: ${ext}`, true);
-    return;
+  if (!['.pdf', '.docx', '.doc'].includes(ext)) {
+    return showResult('error', `不支持 ${ext}`);
   }
 
   uploadZone.style.display = 'none';
   const progress = $('#upload-progress');
   progress.style.display = 'block';
   $('#upload-file-info').textContent = file.name;
-  $('#progress-fill').style.width = '10%';
-  $('#progress-text').textContent = '上传中...';
+  setProgress(10, '上传中...');
 
   try {
-    const form = new FormData();
-    form.append('file', file);
+    const fd = new FormData();
+    fd.append('file', file);
+    setProgress(30, '处理中...');
 
-    $('#progress-fill').style.width = '30%';
-    $('#progress-text').textContent = '处理中...';
-
-    const res = await fetch(`${API_BASE}/documents/upload`, { method: 'POST', body: form });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || '上传失败');
-    }
+    const res = await fetch(`${API}/documents/upload`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '上传失败');
     const data = await res.json();
 
-    $('#progress-fill').style.width = '60%';
-    $('#progress-text').textContent = '处理中，等待结果...';
+    setProgress(60, '等待结果...');
 
     // Poll status
     const taskId = data.task_id;
     let status = 'queued';
-    let attempts = 0;
-    const maxAttempts = 120;
-
-    while (status !== 'indexed' && status !== 'review' && status !== 'failed' && attempts < maxAttempts) {
+    for (let i = 0; i < 120; i++) {
       await sleep(1500);
-      attempts++;
-      const sr = await fetch(`${API_BASE}/documents/${taskId}/status`);
+      const sr = await fetch(`${API}/documents/${taskId}/status`);
       const sd = await sr.json();
       status = sd.status;
-      if (attempts % 4 === 0) {
-        $('#progress-text').textContent = `处理中 (${Math.round(attempts * 1.5)}s)...`;
+      if (['indexed', 'review', 'failed'].includes(status)) {
+        showResult(
+          status === 'failed' ? 'error' : 'success',
+          `${sd.filename || file.name}`,
+          sd.total_pages || 0,
+          sd.chunk_count || 0,
+          sd.indexed_count || 0,
+          status,
+        );
+        break;
       }
+      if (i % 4 === 3) setProgress(60 + i * 0.3, `处理中 (${Math.round(i * 1.5)}s)...`);
     }
-
-    $('#progress-fill').style.width = '100%';
-    progress.style.display = 'none';
-
-    if (status === 'failed') {
-      showUploadResult('error', `处理失败: ${data.message || '未知错误'}`);
-    } else {
-      const detail = await fetch(`${API_BASE}/documents/${taskId}/status`).then(r => r.json());
-      showUploadResult('success', `处理完成`, true);
-      addHistory(file.name, status);
-    }
+    setProgress(100, '完成');
   } catch (err) {
-    $('#progress-fill').style.width = '0%';
-    progress.style.display = 'none';
-    uploadZone.style.display = 'block';
-    showUploadResult('error', err.message || '上传失败');
+    showResult('error', err.message);
   }
+  progress.style.display = 'none';
+  uploadZone.style.display = 'block';
 }
 
-function showUploadResult(type, msg, showStats = false) {
+function setProgress(pct, text) {
+  $('#progress-fill').style.width = pct + '%';
+  $('#progress-text').textContent = text;
+}
+
+function showResult(type, filename, pages, chunks, indexed, status) {
   const el = $('#upload-result');
   el.style.display = 'block';
-  el.className = `upload-result ${type}`;
-  if (showStats) {
-    el.innerHTML = `<p>${msg}</p><div class="result-grid">
-      <div class="result-stat"><strong id="r-pages">-</strong><span>页数</span></div>
-      <div class="result-stat"><strong id="r-chunks">-</strong><span>切片</span></div>
-      <div class="result-stat"><strong id="r-indexed">-</strong><span>已索引</span></div>
-    </div>`;
-    // Fetch task detail for stats (re-fetch status to get full data)
-    // The status endpoint doesn't return all stats; show what we have
+  el.className = 'upload-result ' + type;
+  if (type === 'success') {
+    const statusLabel = status === 'review' ? '<span class="r-status review">待审核</span>' : '<span class="r-status ok">完成</span>';
+    el.innerHTML = `<div class="result-filename">${filename} ${statusLabel}</div>
+      <div class="result-grid">
+        <div class="result-stat"><strong>${pages}</strong><span>页数</span></div>
+        <div class="result-stat"><strong>${chunks}</strong><span>切片</span></div>
+        <div class="result-stat"><strong>${indexed}</strong><span>已索引</span></div>
+      </div>`;
   } else {
-    el.innerHTML = `<p>${msg}</p>`;
+    el.innerHTML = `<div class="result-filename" style="color:var(--danger)">${filename}</div><div style="font-size:13px;color:var(--text-muted);margin-top:4px">${filename}</div>`;
   }
-  $('#upload-history').style.display = 'block';
-}
-
-function addHistory(name, status) {
-  const list = $('#history-list');
-  const item = document.createElement('div');
-  item.className = 'history-item';
-  const cls = status === 'failed' ? 'fail' : status === 'review' ? 'processing' : 'ok';
-  const label = status === 'failed' ? '失败' : status === 'review' ? '待审核' : '完成';
-  item.innerHTML = `<span>${name}</span><span class="h-status ${cls}">${label}</span>`;
-  list.prepend(item);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -169,7 +125,7 @@ const chatSend = $('#chat-send');
 const chatMessages = $('#chat-messages');
 
 chatSend.addEventListener('click', sendMessage);
-chatInput.addEventListener('keydown', (e) => {
+chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
@@ -177,49 +133,41 @@ async function sendMessage() {
   const text = chatInput.value.trim();
   if (!text) return;
 
-  addMessage('user', text);
+  addMsg('user', text);
   chatInput.value = '';
   chatSend.disabled = true;
   chatSend.textContent = '...';
 
-  // Add a temporary bot message
-  const tempId = 'temp-msg';
-  addMessage('bot', '思考中...', tempId);
+  const tempId = 't' + Date.now();
+  addMsg('bot', '思考中...', tempId);
 
   try {
-    const res = await fetch(`${API_BASE}/query`, {
+    const res = await fetch(`${API}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: text, top_k: 10 }),
     });
-
     const data = await res.json();
-
-    // Remove temp message
-    const tempEl = document.getElementById(tempId);
-    if (tempEl) tempEl.remove();
+    document.getElementById(tempId)?.remove();
 
     if (data.answer) {
-      let citationsHtml = '';
-      if (data.citations && data.citations.length > 0) {
-        citationsHtml = `<div class="msg-citations">
-          <details>
-            <summary>📎 ${data.citations.length} 个引用来源</summary>
-            ${data.citations.map(c => `<div class="cite-item">📄 ${c.source_file} | 第${c.page_num}页${c.section ? ' | §' + c.section : ''}</div>`).join('')}
-          </details>
-        </div>`;
+      let html = data.answer;
+      if (data.citations?.length) {
+        html += `<div class="msg-citations"><details>
+          <summary>📎 ${data.citations.length} 个引用来源</summary>
+          ${data.citations.map(c => `<div class="cite-item">📄 ${c.source_file} | 第${c.page_num}页${c.section ? ' | §' + c.section : ''}</div>`).join('')}
+        </details></div>`;
       }
-      const confidenceHtml = data.confidence !== undefined
-        ? `<div class="msg-confidence">置信度: ${(data.confidence * 100).toFixed(0)}%${data.needs_review ? ' ⚠️ 需审核' : ''}</div>`
-        : '';
-      addMessage('bot', data.answer + citationsHtml + confidenceHtml);
+      if (data.confidence !== undefined) {
+        html += `<div class="msg-confidence">置信度 ${(data.confidence * 100).toFixed(0)}%${data.needs_review ? ' ⚠️' : ''}</div>`;
+      }
+      addMsg('bot', html);
     } else {
-      addMessage('bot', '抱歉，无法获取回答。');
+      addMsg('bot', '无法获取回答。');
     }
   } catch (err) {
-    const tempEl = document.getElementById(tempId);
-    if (tempEl) tempEl.remove();
-    addMessage('bot', '请求失败: ' + err.message);
+    document.getElementById(tempId)?.remove();
+    addMsg('bot', '请求失败: ' + err.message);
   } finally {
     chatSend.disabled = false;
     chatSend.textContent = '发送';
@@ -227,11 +175,11 @@ async function sendMessage() {
   }
 }
 
-function addMessage(role, html, id = null) {
+function addMsg(role, html, id) {
   const div = document.createElement('div');
-  div.className = `message ${role}`;
+  div.className = 'message ' + role;
   if (id) div.id = id;
-  div.innerHTML = `<div class="msg-content">${html}</div>`;
+  div.innerHTML = '<div class="msg-content">' + html + '</div>';
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -239,88 +187,51 @@ function addMessage(role, html, id = null) {
 /* ── Review ── */
 async function loadReviews() {
   try {
-    const res = await fetch(`${API_BASE}/review/pending`);
+    const res = await fetch(`${API}/review/pending`);
     if (!res.ok) return;
     const items = await res.json();
-
     const badge = $('#review-badge');
-    if (items.length > 0) {
-      badge.textContent = items.length;
-      badge.style.display = 'inline';
-    } else {
-      badge.style.display = 'none';
-    }
+    if (items.length) { badge.textContent = items.length; badge.style.display = 'inline'; }
+    else { badge.style.display = 'none'; }
 
+    $('#review-empty').style.display = items.length ? 'none' : 'block';
     const list = $('#review-list');
-    const empty = $('#review-empty');
-
-    if (items.length === 0) {
-      list.style.display = 'none';
-      empty.style.display = 'block';
-      return;
-    }
-
-    empty.style.display = 'none';
-    list.style.display = 'block';
-    list.innerHTML = '';
-
-    items.forEach(item => {
-      const card = document.createElement('div');
-      card.className = 'review-card';
-      card.innerHTML = `
-        <div class="r-header">
-          <div>
-            <div class="r-filename">${item.filename || item.task_id}</div>
-            <div class="r-meta">ID: ${item.task_id} | 切片: ${item.chunk_count || 0}</div>
-            ${item.error ? `<div class="r-error">${item.error}</div>` : ''}
-          </div>
-        </div>
+    list.style.display = items.length ? 'block' : 'none';
+    list.innerHTML = items.map(item => `
+      <div class="review-card">
+        <div class="r-filename">${item.filename || item.task_id}</div>
+        <div class="r-meta">ID: ${item.task_id} | 切片: ${item.chunk_count || 0}${item.error ? ' | ' + item.error : ''}</div>
         <div class="r-actions">
-          <button class="btn btn-primary btn-sm" onclick="approveReview('${item.task_id}', true)">✅ 通过</button>
-          <button class="btn btn-danger btn-sm" onclick="approveReview('${item.task_id}', false)">❌ 拒绝</button>
+          <button class="btn btn-primary btn-sm" onclick="approve('${item.task_id}',true)">✅ 通过</button>
+          <button class="btn btn-danger btn-sm" onclick="approve('${item.task_id}',false)">❌ 拒绝</button>
         </div>
-      `;
-      list.appendChild(card);
-    });
-  } catch {
-    // ignore
-  }
+      </div>`).join('');
+  } catch {}
 }
 
-async function approveReview(taskId, approve) {
+async function approve(id, ok) {
   try {
-    const res = await fetch(`${API_BASE}/review/${taskId}/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: approve ? 'approve' : 'reject' }),
+    const r = await fetch(`${API}/review/${id}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: ok ? 'approve' : 'reject' }),
     });
-    if (res.ok) {
-      loadReviews();
-    } else {
-      const err = await res.json();
-      alert('操作失败: ' + (err.detail || ''));
-    }
-  } catch (err) {
-    alert('请求失败: ' + err.message);
-  }
+    if (r.ok) loadReviews();
+    else alert('操作失败: ' + ((await r.json()).detail || ''));
+  } catch (e) { alert(e.message); }
 }
 
-// Auto-refresh reviews when tab is shown
-const reviewTab = document.getElementById('tab-review');
-const observer = new MutationObserver(() => {
-  if (reviewTab.classList.contains('active')) {
-    loadReviews();
-  }
-});
-observer.observe(reviewTab, { attributes: true, attributeFilter: ['class'] });
+// Watch review tab
+new MutationObserver(() => {
+  if ($('#tab-review')?.classList.contains('active')) loadReviews();
+}).observe($('#tab-review'), { attributes: true, attributeFilter: ['class'] });
 
-// Initial review load
 loadReviews();
 
-/* ── Keyboard shortcut ── */
-document.addEventListener('keydown', (e) => {
-  if (e.altKey || e.metaKey) {
-    const map = { '1': 'upload', '2': 'chat', '3': 'review' };
-    if (map[e.key]) { e.preventDefault(); switchTab(map[e.key]); }
+/* ── Hotkeys ── */
+document.addEventListener('keydown', e => {
+  if (e.altKey) {
+    const map = { '1': 'workspace', '2': 'review' };
+    const tab = map[e.key];
+    if (tab) { e.preventDefault(); document.querySelector(`[data-tab="${tab}"]`)?.click(); }
   }
 });

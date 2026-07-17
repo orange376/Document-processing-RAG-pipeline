@@ -9,20 +9,15 @@
 <body>
 
 <div id="app">
-  <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-header">
       <h1>RAG Pipeline</h1>
       <span class="version">v0.1</span>
     </div>
     <nav class="sidebar-nav">
-      <button class="nav-item active" data-tab="upload">
-        <span class="nav-icon">&#128196;</span>
-        <span>上传文档</span>
-      </button>
-      <button class="nav-item" data-tab="chat">
-        <span class="nav-icon">&#128172;</span>
-        <span>问答</span>
+      <button class="nav-item active" data-tab="workspace">
+        <span class="nav-icon">&#9881;</span>
+        <span>工作台</span>
       </button>
       <button class="nav-item" data-tab="review">
         <span class="nav-icon">&#9989;</span>
@@ -36,58 +31,45 @@
     </div>
   </aside>
 
-  <!-- Main -->
   <main class="main">
-    <!-- ======== Upload Tab ======== -->
-    <section class="tab-content active" id="tab-upload">
-      <div class="tab-header">
-        <h2>&#128196; 上传文档</h2>
-      </div>
-      <div class="upload-zone" id="upload-zone">
-        <div class="upload-icon">&#128206;</div>
-        <p>拖拽文件到此处，或点击选择</p>
-        <p class="upload-hint">支持 PDF、DOCX</p>
-        <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden>
-        <button class="btn btn-primary" id="select-btn">选择文件</button>
-      </div>
-      <div class="upload-progress" id="upload-progress" style="display:none">
-        <div class="upload-file-info" id="upload-file-info"></div>
-        <div class="progress-bar">
-          <div class="progress-fill" id="progress-fill"></div>
+    <!-- Workspace: upload + chat -->
+    <section class="tab-content active" id="tab-workspace">
+      <!-- Upload area -->
+      <div class="ws-upload">
+        <div class="upload-zone" id="upload-zone">
+          <div class="upload-icon">&#128206;</div>
+          <p>拖拽文件到此处，或点击选择</p>
+          <p class="upload-hint">支持 PDF、DOCX</p>
+          <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden>
+          <button class="btn btn-primary" id="select-btn">选择文件</button>
         </div>
-        <p class="progress-text" id="progress-text">处理中...</p>
+        <div class="upload-progress" id="upload-progress" style="display:none">
+          <div class="upload-file-info" id="upload-file-info"></div>
+          <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+          <p class="progress-text" id="progress-text">处理中...</p>
+        </div>
+        <div class="upload-result" id="upload-result" style="display:none"></div>
       </div>
-      <div class="upload-result" id="upload-result" style="display:none"></div>
-      <div class="upload-history" id="upload-history" style="display:none">
-        <h3>处理记录</h3>
-        <div class="history-list" id="history-list"></div>
+
+      <!-- Divider -->
+      <div class="ws-divider"></div>
+
+      <!-- Chat area -->
+      <div class="ws-chat">
+        <div class="chat-messages" id="chat-messages">
+          <div class="message bot"><div class="msg-content">上传文档后可开始提问。</div></div>
+        </div>
+        <div class="chat-input-bar">
+          <input type="text" id="chat-input" placeholder="输入问题..." autocomplete="off">
+          <button class="btn btn-primary" id="chat-send">发送</button>
+        </div>
       </div>
     </section>
 
-    <!-- ======== Chat Tab ======== -->
-    <section class="tab-content" id="tab-chat">
-      <div class="tab-header">
-        <h2>&#128172; 问答</h2>
-      </div>
-      <div class="chat-messages" id="chat-messages">
-        <div class="message bot">
-          <div class="msg-content">文档已就绪，请提问。</div>
-        </div>
-      </div>
-      <div class="chat-input-bar">
-        <input type="text" id="chat-input" placeholder="输入问题..." autocomplete="off">
-        <button class="btn btn-primary" id="chat-send">发送</button>
-      </div>
-    </section>
-
-    <!-- ======== Review Tab ======== -->
+    <!-- Review tab -->
     <section class="tab-content" id="tab-review">
-      <div class="tab-header">
-        <h2>&#9989; 待审核</h2>
-      </div>
-      <div class="review-empty" id="review-empty">
-        <p>&#128226; 暂无待审核项</p>
-      </div>
+      <div class="tab-header"><h2>&#9989; 待审核</h2></div>
+      <div class="review-empty" id="review-empty"><p>&#128226; 暂无待审核项</p></div>
       <div class="review-list" id="review-list" style="display:none"></div>
     </section>
   </main>
