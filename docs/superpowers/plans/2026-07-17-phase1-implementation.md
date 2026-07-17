@@ -139,7 +139,7 @@ dependencies = [
     "redis>=5.0.0",
     "pymupdf>=1.24.0",
     "python-docx>=1.1.0",
-    "paddlepaddle-gpu==3.2.1",
+    # paddlepaddle-gpu 安装方式见 README（需从 PaddlePaddle 官方源安装）
     "paddleocr>=3.4.0",
     "FlagEmbedding>=1.3.0",
     "qdrant-client>=1.16.0",

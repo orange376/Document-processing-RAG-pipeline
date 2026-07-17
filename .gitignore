@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+.venv312/
+
+# Data
+data/uploads/*
+data/vector_db/*
+data/models/*
+!data/uploads/.gitkeep
+!data/vector_db/.gitkeep
+!data/models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+node_modules/
+node_modules/
+node_modules/
+package-lock.json
+package.json
