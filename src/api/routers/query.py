@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import json as json_mod
 import logging
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from src.api.schemas import QueryRequest, QueryResponse
 from src.confidence.fallback import route
 from src.confidence.scorer import ConfidenceScorer
@@ -36,6 +39,7 @@ _threshold_instance: ThresholdStrategy | None = None
 _prompt_manager_instance: PromptManager | None = None
 _context_builder_instance: ContextBuilder | None = None
 _query_rewriter_instance: QueryRewriter | None = None
+_embedding_engine_instance: EmbeddingEngine | None = None
 
 
 def _build_retriever() -> Retriever:
@@ -46,7 +50,10 @@ def _build_retriever() -> Retriever:
 
 
 def _build_embedding_engine() -> EmbeddingEngine:
-    return EmbeddingEngine()
+    global _embedding_engine_instance
+    if _embedding_engine_instance is None:
+        _embedding_engine_instance = EmbeddingEngine()
+    return _embedding_engine_instance
 
 
 def _build_context_builder() -> ContextBuilder:
@@ -91,7 +98,7 @@ def _build_threshold() -> ThresholdStrategy:
 def _build_query_rewriter() -> QueryRewriter:
     global _query_rewriter_instance
     if _query_rewriter_instance is None:
-        _query_rewriter_instance = QueryRewriter()
+        _query_rewriter_instance = QueryRewriter(llm_client=_build_llm_client())
     return _query_rewriter_instance
 
 
@@ -124,17 +131,16 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
     except Exception:
         logger.exception("Embedding generation failed, using zero vector")
         query_embedding = [0.0] * 1024
-    finally:
-        embedding_engine.unload()
 
-    # 2. Query rewriting
+    # 2. Query rewriting — use rewritten query for BM25 to improve keyword recall
     rewriter = _build_query_rewriter()
     rewritten_query = rewriter.rewrite(request.query)
+    search_query = rewritten_query if rewritten_query else request.query
 
-    # 3. Retrieve (using rewritten query for search)
+    # 3. Retrieve (BM25 uses rewritten text for keyword search, original embedding for vector search)
     retriever = _build_retriever()
     results = retriever.retrieve(
-        rewritten_query,
+        search_query,
         query_embedding,
         top_k=request.top_k,
     )
@@ -204,4 +210,119 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         confidence=overall,
         confidence_details=details,
         needs_review=route_result.needs_review,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Streaming query (SSE)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/query/stream",
+    summary="Run a RAG query with streaming SSE response",
+)
+async def handle_query_stream(request: QueryRequest) -> StreamingResponse:
+    """Execute the RAG pipeline with a streaming LLM response.
+
+    Returns a Server-Sent Events stream where each event is a JSON line:
+      ``data: {"type":"token","content":"..."}``
+    followed by a final metadata event:
+      ``data: {"type":"meta","confidence":0.85,...}``
+    """
+
+    async def _generate() -> AsyncGenerator[str, None]:
+        # 1. Embedding
+        embedding_engine = _build_embedding_engine()
+        try:
+            query_embedding = embedding_engine.embed(request.query)
+        except Exception:
+            logger.exception("Embedding generation failed, using zero vector")
+            query_embedding = [0.0] * 1024
+
+        # 2. Query rewriting
+        rewriter = _build_query_rewriter()
+        rewritten_query = rewriter.rewrite(request.query)
+        search_query = rewritten_query if rewritten_query else request.query
+
+        # 3. Retrieve
+        retriever = _build_retriever()
+        results = retriever.retrieve(
+            search_query,
+            query_embedding,
+            top_k=request.top_k,
+        )
+
+        if not results:
+            yield f"data: {json_mod.dumps({'type': 'token', 'content': '根据检索未找到相关文档内容，无法回答该问题。'})}\n\n"
+            yield f"data: {json_mod.dumps({'type': 'meta', 'confidence': 0.0, 'confidence_details': {}, 'citations': [], 'needs_review': False})}\n\n"
+            return
+
+        # 4. Build context
+        builder = _build_context_builder()
+        context_str, citations = builder.build(results)
+
+        # 5. Generate prompt
+        prompt_manager = _build_prompt_manager()
+        prompt = prompt_manager.render("qa", query=request.query, context=context_str)
+
+        # 6. Stream LLM response
+        llm = _build_llm_client()
+        full_answer_chunks: list[str] = []
+
+        async for token in llm.chat_stream(prompt):
+            full_answer_chunks.append(token)
+            yield f"data: {json_mod.dumps({'type': 'token', 'content': token})}\n\n"
+
+        answer = "".join(full_answer_chunks) if full_answer_chunks else "抱歉，AI 模型暂时无法生成回答。"
+        if not full_answer_chunks:
+            yield f"data: {json_mod.dumps({'type': 'token', 'content': answer})}\n\n"
+
+        # 7. Score confidence (query-time signals)
+        scorer = _build_confidence_scorer()
+        reranker_scores = [r.score for r in results]
+        score_result = scorer.score(
+            reranker_scores=reranker_scores,
+            num_results=len(results),
+        )
+        overall = score_result["overall"]
+        details = score_result["details"]
+
+        # 8. Threshold
+        threshold = _build_threshold()
+        decision = threshold.classify(overall)
+
+        # 9. Route
+        route_result = route(
+            decision,
+            {
+                "answer": answer,
+                "citations": [dataclasses.asdict(c) for c in citations],
+                "confidence": overall,
+                "confidence_details": details,
+            },
+        )
+
+        if route_result.decision == "reject":
+            final_citations: list = []
+        else:
+            final_citations = citations
+
+        # 10. Send final metadata event
+        yield f"data: {json_mod.dumps({
+            'type': 'meta',
+            'confidence': overall,
+            'confidence_details': details,
+            'citations': [dataclasses.asdict(c) for c in final_citations],
+            'needs_review': route_result.needs_review,
+        })}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

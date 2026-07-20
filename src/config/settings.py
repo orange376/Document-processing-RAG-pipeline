@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     qwen_api_key: str = ""
     qwen_api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model: str = "qwen3-7b-plus"
-    qwen_vl_model: str = "qwen2.5-vl-3b-instruct"
+    qwen_vl_model: str = "qwen-vl-plus"
 
     # === Paths ===
     upload_dir: str = "./data/uploads"

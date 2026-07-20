@@ -8,6 +8,11 @@ from .responses import (
     ParsePage,
     ParseResponse,
     QueryResponse,
+    ReviewAction,
+    ReviewBlock,
+    ReviewChunk,
+    ReviewDetail,
+    ReviewPage,
     UploadResponse,
 )
 
@@ -20,4 +25,9 @@ __all__ = [
     "ParsePage",
     "ParseBlock",
     "ParseChunk",
+    "ReviewBlock",
+    "ReviewChunk",
+    "ReviewPage",
+    "ReviewDetail",
+    "ReviewAction",
 ]

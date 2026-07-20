@@ -22,6 +22,12 @@ data/models/*
 .vscode/
 .idea/
 
+# Dev temp files
+chunk_debug.txt
+query_result.txt
+query_result2.txt
+server.log
+
 # OS
 .DS_Store
 Thumbs.db

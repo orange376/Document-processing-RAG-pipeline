@@ -88,6 +88,25 @@ class BM25Index:
         return results
 
     # ------------------------------------------------------------------
+    # 删除
+    # ------------------------------------------------------------------
+
+    def remove_by_source_file(self, source_file: str) -> int:
+        """Remove all chunks belonging to *source_file* and rebuild the index.
+
+        Returns the number of chunks removed.
+        """
+        before = len(self._chunks)
+        self._chunks = [
+            c for c in self._chunks
+            if c.metadata is None or c.metadata.source_file != source_file
+        ]
+        removed = before - len(self._chunks)
+        if removed:
+            self._rebuild()
+        return removed
+
+    # ------------------------------------------------------------------
     # 清空
     # ------------------------------------------------------------------
 

@@ -5,8 +5,51 @@ from src.config import get_settings
 from src.domain import Chunk
 
 
+# Module-level singleton for the underlying QdrantClient.
+# Local-mode Qdrant uses file locking and only allows one client per storage
+# directory — sharing the instance across all VectorStore consumers avoids
+# "already accessed by another instance" errors.
+_QDRANT_CLIENT: object | None = None
+
+
+def _get_qdrant_client(db_path: str) -> object:
+    """Return the shared QdrantClient singleton, creating it on first call."""
+    global _QDRANT_CLIENT
+    if _QDRANT_CLIENT is not None:
+        return _QDRANT_CLIENT
+
+    from qdrant_client import QdrantClient
+    from qdrant_client.http.models import VectorParams, Distance
+
+    Path(db_path).mkdir(parents=True, exist_ok=True)
+
+    client = QdrantClient(path=db_path)
+
+    # Check collection exists; create if not
+    existing = client.get_collections()
+    names = [c.name for c in existing.collections]
+
+    collection_name = "documents"
+    if collection_name not in names:
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(
+                size=1024,  # bge-large-zh-v1.5 输出 1024 维
+                distance=Distance.COSINE,
+            ),
+        )
+
+    _QDRANT_CLIENT = client
+    return client
+
+
 class VectorStore:
-    """向量存储 — 基于 Qdrant 本地模式"""
+    """向量存储 — 基于 Qdrant 本地模式
+
+    The underlying ``QdrantClient`` is a module-level singleton so all
+    consumers within the process share one client — vital for local-mode
+    Qdrant which uses file-level locking.
+    """
 
     def __init__(self, collection_name: str = "documents"):
         self._settings = get_settings()
@@ -16,27 +59,8 @@ class VectorStore:
     def _lazy_init(self):
         if self._client is not None:
             return
-
-        from qdrant_client import QdrantClient
-        from qdrant_client.http.models import VectorParams, Distance
-
         db_path = str(self._settings.resolved_vector_db_dir)
-        Path(db_path).mkdir(parents=True, exist_ok=True)
-
-        self._client = QdrantClient(path=db_path)
-
-        # 检查 collection 是否存在，不存在则创建
-        existing = self._client.get_collections()
-        names = [c.name for c in existing.collections]
-
-        if self._collection_name not in names:
-            self._client.create_collection(
-                collection_name=self._collection_name,
-                vectors_config=VectorParams(
-                    size=1024,  # bge-large-zh-v1.5 输出 1024 维
-                    distance=Distance.COSINE,
-                ),
-            )
+        self._client = _get_qdrant_client(db_path)
 
     def index_chunks(self, chunks: list[Chunk]) -> int:
         """将 Chunk 列表写入向量库"""
@@ -108,6 +132,32 @@ class VectorStore:
             exact=True,
         )
         return result.count or 0
+
+    def delete_by_source_file(self, source_file: str) -> int:
+        """Delete all points whose payload matches *source_file*.
+
+        Returns the number of points deleted (0 if the collection doesn't
+        exist yet or nothing matched).
+        """
+        self._lazy_init()
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+        try:
+            result = self._client.delete(
+                collection_name=self._collection_name,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source_file",
+                            match=MatchValue(value=source_file),
+                        )
+                    ]
+                ),
+                wait=True,
+            )
+            return getattr(result, "count", 0)
+        except Exception:
+            return 0
 
 
 def create_vector_store() -> VectorStore:
