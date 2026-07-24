@@ -1,6 +1,6 @@
 # RAG Pipeline — 工业级文档解析与检索增强生成系统
 
-> **纯手撸 RAG 流水线** · 无 LangChain / LlamaIndex 依赖 · 全模块单元测试覆盖（Claude code辅助编码）
+> 无 LangChain / LlamaIndex 依赖 · 全模块单元测试覆盖（Claude code辅助编码）
 
 一个面向复杂文档的 RAG（检索增强生成）系统，支持 **PDF/Word** 文档的解析、版面分析、结构感知切片、混合检索（稠密 + 稀疏 + RRF 融合）、BGE 重排、LLM 生成与置信度评估闭环。所有组件均为自主实现，无大框架黑盒依赖。
 
