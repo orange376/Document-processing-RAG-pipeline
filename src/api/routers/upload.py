@@ -98,6 +98,7 @@ def _serialize_chunks(chunks) -> list[dict]:
             item["section"] = c.metadata.section
             item["chunk_type"] = c.metadata.chunk_type
             item["layout_tree_path"] = c.metadata.layout_tree_path
+            item["chunk_level"] = c.metadata.chunk_level
         result.append(item)
     return result
 

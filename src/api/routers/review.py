@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from src.api.schemas import (
     ReviewDetail,
     ReviewPage,
 )
-from src.api.routers.upload import _save_task_db, task_store
+from src.api.routers.upload import _save_task_db, task_store, _settings_for_db
 from src.pipeline import PipelineOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,107 @@ router = APIRouter(tags=["review"])
 
 # In-memory review decisions (task_id -> "approved" | "rejected")
 review_decisions: dict[str, str] = {}
+
+# ---------------------------------------------------------------------------
+# Persistent feedback store
+# ---------------------------------------------------------------------------
+FEEDBACK_PATH: Path = _settings_for_db.resolved_upload_dir / "feedback_db.json"
+_feedback_store: list[dict] = []
+
+
+def _load_feedback() -> None:
+    """Load feedback log from disk on startup."""
+    global _feedback_store
+    try:
+        if FEEDBACK_PATH.exists():
+            _feedback_store = json.loads(FEEDBACK_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        _feedback_store = []
+
+
+def _save_feedback() -> None:
+    """Persist feedback log to disk."""
+    try:
+        FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        FEEDBACK_PATH.write_text(
+            json.dumps(_feedback_store, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("_save_feedback failed: %s", exc)
+
+
+def _record_feedback(
+    task_id: str,
+    action: str,
+    reason: str = "",
+    edited_blocks: list[dict] | None = None,
+    filename: str = "",
+    confidence: float = 0.0,
+) -> None:
+    """Record a review action in the persistent feedback log."""
+    import datetime
+
+    _feedback_store.append({
+        "task_id": task_id,
+        "action": action,
+        "reason": reason,
+        "edited_blocks": edited_blocks or [],
+        "filename": filename,
+        "confidence": confidence,
+        "timestamp": datetime.datetime.now().isoformat(),
+    })
+    _save_feedback()
+
+
+def _compute_feedback_stats() -> dict:
+    """Compute error / correction statistics from the feedback log."""
+    total = len(_feedback_store)
+    if total == 0:
+        return {"total_actions": 0}
+
+    approved = sum(1 for f in _feedback_store if f.get("action") == "approve")
+    rejected = sum(1 for f in _feedback_store if f.get("action") == "reject")
+    with_edits = sum(1 for f in _feedback_store if f.get("edited_blocks"))
+
+    # Top error-prone blocks (by block_type)
+    from collections import Counter
+
+    block_type_errors: Counter = Counter()
+    for fb in _feedback_store:
+        for eb in fb.get("edited_blocks", []):
+            block_type_errors[eb.get("block_type", "unknown")] += 1
+
+    # Per-file error rate
+    file_actions: dict[str, list[dict]] = {}
+    for fb in _feedback_store:
+        fname = fb.get("filename", "unknown")
+        file_actions.setdefault(fname, []).append(fb)
+
+    file_stats = {
+        fname: {
+            "actions": len(actions),
+            "edits": sum(1 for a in actions if a.get("edited_blocks")),
+            "approve_rate": sum(1 for a in actions if a.get("action") == "approve") / len(actions),
+        }
+        for fname, actions in file_actions.items()
+    }
+
+    return {
+        "total_actions": total,
+        "approved": approved,
+        "rejected": rejected,
+        "with_edits": with_edits,
+        "approval_rate": round(approved / total, 3),
+        "edit_rate": round(with_edits / total, 3),
+        "top_error_block_types": block_type_errors.most_common(10),
+        "file_stats": file_stats,
+        "recent": _feedback_store[-10:],
+    }
+
+
+# Load feedback on module init
+_load_feedback()
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +216,18 @@ async def list_pending_reviews() -> list[ReviewDetail]:
     return pending
 
 
+@router.get("/review/stats")
+async def get_review_stats() -> dict:
+    """Return feedback statistics — error rates, top problem areas, file health."""
+    return _compute_feedback_stats()
+
+
+@router.get("/review/feedback")
+async def list_feedback_entries(limit: int = 20) -> list[dict]:
+    """Return the most recent feedback log entries."""
+    return _feedback_store[-limit:]
+
+
 @router.get("/review/{task_id}")
 async def get_review_detail(task_id: str) -> ReviewDetail:
     """Return full review detail for a single task.
@@ -160,6 +274,16 @@ async def approve_review(task_id: str, body: ReviewAction) -> dict:
 
     task["needs_review"] = False
     _save_task_db()
+
+    # Record feedback for error analysis and model improvement
+    _record_feedback(
+        task_id=task_id,
+        action=decision,
+        reason=body.reason or "",
+        edited_blocks=body.edited_blocks or [],
+        filename=task.get("filename", ""),
+        confidence=task.get("confidence", 0.0),
+    )
 
     return {
         "task_id": task_id,

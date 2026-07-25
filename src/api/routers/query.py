@@ -14,6 +14,7 @@ from src.confidence.fallback import route
 from src.confidence.scorer import ConfidenceScorer
 from src.confidence.threshold import ThresholdStrategy
 from src.config import get_settings
+from src.cache import RedisCache
 from src.generation.context_builder import ContextBuilder
 from src.generation.llm_client import LLMClient
 from src.generation.prompt_manager import PromptManager
@@ -143,6 +144,7 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         search_query,
         query_embedding,
         top_k=request.top_k,
+        source_files=request.document_ids,
     )
 
     # No results → early return
@@ -159,15 +161,20 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
     builder = _build_context_builder()
     context_str, citations = builder.build(results)
 
-    # 5. Generate answer (using original query for the prompt)
-    prompt_manager = _build_prompt_manager()
-    prompt = prompt_manager.render("qa", query=request.query, context=context_str)
+    # 5. Generate answer (using original query for the prompt), with cache
+    answer_cache = RedisCache()
+    answer = answer_cache.get_answer(request.query, context_str)
+    if answer is None:
+        prompt_manager = _build_prompt_manager()
+        prompt = prompt_manager.render("qa", query=request.query, context=context_str)
 
-    llm = _build_llm_client()
-    answer = llm.chat(prompt)
+        llm = _build_llm_client()
+        answer = llm.chat(prompt)
 
-    if not answer:
-        answer = "抱歉，AI 模型暂时无法生成回答。"
+        if not answer:
+            answer = "抱歉，AI 模型暂时无法生成回答。"
+        else:
+            answer_cache.set_answer(request.query, context_str, answer)
 
     # 6. Score confidence (query-time signals: reranker scores + result count)
     scorer = _build_confidence_scorer()
@@ -251,6 +258,7 @@ async def handle_query_stream(request: QueryRequest) -> StreamingResponse:
             search_query,
             query_embedding,
             top_k=request.top_k,
+            source_files=request.document_ids,
         )
 
         if not results:

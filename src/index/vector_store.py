@@ -92,15 +92,33 @@ class VectorStore:
             )
         return len(points)
 
-    def search(self, query_embedding: list[float], top_k: int = 10) -> list[Chunk]:
-        """向量检索"""
+    def search(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+        source_files: list[str] | None = None,
+    ) -> list[Chunk]:
+        """向量检索，支持可选 source_files 过滤。"""
         self._lazy_init()
+
+        query_filter = None
+        if source_files:
+            from qdrant_client.http.models import Filter, FieldCondition, MatchAny
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="source_file",
+                        match=MatchAny(any=source_files),
+                    )
+                ]
+            )
 
         resp = self._client.query_points(
             collection_name=self._collection_name,
             query=query_embedding,
             limit=top_k,
             with_vectors=True,
+            query_filter=query_filter,
         )
 
         results = []

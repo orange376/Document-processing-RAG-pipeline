@@ -6,6 +6,8 @@ import pickle
 from pathlib import Path
 from typing import List
 
+import numpy as np
+
 from src.domain import Chunk, SearchResult
 
 
@@ -59,13 +61,35 @@ class BM25Index:
     # 检索
     # ------------------------------------------------------------------
 
-    def search(self, query: str, top_k: int = 30) -> list[SearchResult]:
-        """BM25 检索，返回 top_k 个 SearchResult。"""
+    def search(
+        self,
+        query: str,
+        top_k: int = 30,
+        source_files: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """BM25 检索，返回 top_k 个 SearchResult。
+
+        Args:
+            query: 查询文本。
+            top_k: 返回条数上限。
+            source_files: 可选，限定只检索这些 source_file 的切片。
+        """
         if not query.strip() or self._bm25 is None:
             return []
 
         tokenized_query = _tokenize(query)
         scores = self._bm25.get_scores(tokenized_query)
+
+        # Build source_file filter mask
+        if source_files and self._chunks:
+            src_set = set(source_files)
+            mask = np.array([
+                (c.metadata and c.metadata.source_file in src_set)
+                for c in self._chunks
+            ])
+            # Zero out scores for non-matching documents
+            scores = scores.copy()
+            scores[~mask] = 0.0
 
         # 按分数降序排列，取 top_k
         top_indices = sorted(

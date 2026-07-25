@@ -19,6 +19,7 @@ from src.parser.layout_tree import LayoutTreeBuilder, LayoutTreeNode
 from src.parser.chunker import StructureAwareChunker
 from src.index.embedding import EmbeddingEngine
 from src.index.vector_store import VectorStore
+from src.utils import timed
 
 
 @dataclass
@@ -30,6 +31,32 @@ class ProcessingResult:
     confidence: float = 0.0
     status: ProcessingStatus = ProcessingStatus.PROCESSING
     indexed_count: int = 0
+
+
+def _bbox_overlap(a, b) -> bool:
+    """Return True if two bboxes have any overlap (IoU or containment).
+
+    Handles :class:`BBox` objects (with .x0/.y0/.x1/.y1) and plain tuples.
+    Returns False when either bbox is None.
+    """
+    if a is None or b is None:
+        return False
+    try:
+        ax0, ay0, ax1, ay1 = _unpack_bbox(a)
+        bx0, by0, bx1, by1 = _unpack_bbox(b)
+        # Check if they don't overlap
+        if ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _unpack_bbox(b):
+    """Unpack a BBox (dataclass) or tuple into (x0, y0, x1, y1)."""
+    if hasattr(b, "x0"):
+        return (b.x0, b.y0, b.x1, b.y1)
+    return tuple(b)
 
 
 class PipelineOrchestrator:
@@ -62,16 +89,23 @@ class PipelineOrchestrator:
         Returns:
             ProcessingResult 包含处理结果
         """
+        import time
+
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
+        t_total = time.perf_counter()
+
         # === 阶段 1: 加载文档 ===
+        t0 = time.perf_counter()
         loader = self._get_loader(path)
         document = loader.load(str(path))
         document.status = ProcessingStatus.PROCESSING
+        logger.info("[stage] load: %.2fs (pages=%d)", time.perf_counter() - t0, document.total_pages)
 
         # === 阶段 2: 版面分析（PP-DocLayoutV3 + 启发式降级） ===
+        t0 = time.perf_counter()
         is_pdf = path.suffix.lower() == ".pdf"
         self._layout_detector = LayoutDetector() if is_pdf else None
         for page in document.pages:
@@ -106,8 +140,13 @@ class PipelineOrchestrator:
         if self._layout_detector:
             self._layout_detector.unload()
         self._layout_detector = None
+        logger.info("[stage] layout_analysis: %.2fs", time.perf_counter() - t0)
+
+        # === 阶段 2.5: 表格结构恢复（Qwen-VL） ===
+        await self._recover_tables(document, str(path))
 
         # === 阶段 3: OCR（仅对缺文本页面执行） ===
+        t0 = time.perf_counter()
         pages_needing_ocr = [p for p in document.pages if not p.text.strip()]
         has_embedded_images = any(p.images for p in document.pages)
 
@@ -164,30 +203,44 @@ class PipelineOrchestrator:
                     logger.exception("Scanned page recognition (Qwen-VL) failed")
 
         # === 阶段 4: 构建版面树 ===
+        t0 = time.perf_counter()
         tree_builder = LayoutTreeBuilder()
         all_elements = []
         for page in document.pages:
             all_elements.extend(page.layout_elements)
         layout_tree = tree_builder.build(all_elements)
+        logger.info("[stage] tree_build: %.2fs (elements=%d)", time.perf_counter() - t0, len(all_elements))
 
-        # === 阶段 5: 结构感知切片 ===
+        # === 阶段 5: 结构感知切片（多粒度：段落 + 句子） ===
+        t0 = time.perf_counter()
         chunker = StructureAwareChunker()
-        chunks = chunker.chunk(document)
+        chunks = chunker.fine_chunk(document)
+        para_count = sum(1 for c in chunks if c.metadata and c.metadata.chunk_level in ("paragraph", ""))
+        sent_count = sum(1 for c in chunks if c.metadata and c.metadata.chunk_level == "sentence")
+        logger.info(
+            "[stage] chunk: %.2fs (total=%d, paragraph=%d, sentence=%d)",
+            time.perf_counter() - t0, len(chunks), para_count, sent_count,
+        )
 
-        # === 阶段 6: Embedding + 索引 ===
+        # === 阶段 6: Embedding + 索引（CPU 密集型，放入线程池） ===
+        import asyncio
+
         indexed = 0
         try:
+            t0 = time.perf_counter()
             self._embedding_engine = EmbeddingEngine()
-            chunks = self._embedding_engine.embed_chunks(chunks)
+            chunks = await asyncio.to_thread(self._embedding_engine.embed_chunks, chunks)
             self._embedding_engine.unload()
             self._embedding_engine = None
-            indexed = self._vector_store.index_chunks(chunks)
+            indexed = await asyncio.to_thread(self._vector_store.index_chunks, chunks)
+            logger.info("[stage] embed+index: %.2fs (indexed=%d)", time.perf_counter() - t0, indexed)
         except Exception:
             logger.exception("Embedding / indexing failed for %s", path)
             indexed = 0
 
         status = ProcessingStatus.INDEXED if indexed > 0 else ProcessingStatus.PROCESSING
         document.status = status
+        logger.info("[stage] TOTAL: %.2fs (file=%s)", time.perf_counter() - t_total, path.name)
         return ProcessingResult(
             document=document,
             chunks=chunks,
@@ -241,6 +294,9 @@ class PipelineOrchestrator:
         if self._layout_detector:
             self._layout_detector.unload()
         self._layout_detector = None
+
+        # === 阶段 2.5: 表格结构恢复（Qwen-VL） ===
+        await self._recover_tables(document, str(path))
 
         # === 阶段 3: OCR ===
         pages_needing_ocr = [p for p in document.pages if not p.text.strip()]
@@ -303,9 +359,9 @@ class PipelineOrchestrator:
             all_elements.extend(page.layout_elements)
         layout_tree = tree_builder.build(all_elements)
 
-        # === 阶段 5: 结构感知切片 ===
+        # === 阶段 5: 结构感知切片（多粒度） ===
         chunker = StructureAwareChunker()
-        chunks = chunker.chunk(document)
+        chunks = chunker.fine_chunk(document)
 
         return ProcessingResult(
             document=document,
@@ -315,15 +371,15 @@ class PipelineOrchestrator:
         )
 
     async def _ocr_embedded_images(self, document: Document) -> None:
-        """Run OCR / formula recognition on embedded images.
+        """Run OCR / formula / table recognition on embedded images, routed by type.
 
-        Images are now tracked via ``[IMG_N]`` placeholders placed at the
+        Images are tracked via ``[IMG_N]`` placeholders placed at the
         correct text position by :class:`WordLoader`.
 
-        For each image:
-          1. Try :class:`FormulaRecognizer` (Qwen-VL) — if it returns LaTeX,
-             replace the placeholder with ``$$...$$``.
-          2. Otherwise fall back to easyocr and replace with plain text.
+        Routing strategy:
+          - ``block_type == "formula"``  → :class:`FormulaRecognizer` (Qwen-VL → LaTeX)
+          - ``block_type == "table"``    → Qwen-VL table structure → markdown table
+          - ``block_type == "figure"`` or other → Qwen-VL general → easyocr fallback
         """
         import io
 
@@ -343,43 +399,174 @@ class PipelineOrchestrator:
                 if not img_indices:
                     continue
 
+                # Determine routing category from the enclosing block type
+                block_category = block.block_type
+                # Also check layout_elements for a richer category hint
+                for le in page.layout_elements:
+                    if le.category in ("table", "formula", "figure") and _bbox_overlap(
+                        le.bbox, block.bbox
+                    ):
+                        block_category = le.category
+                        break
+
                 for idx in img_indices:
                     if idx >= len(page.images):
                         continue
 
                     placeholder = f"[IMG_{idx}]"
                     if placeholder not in block.content:
-                        continue  # sanity check — should always match
+                        continue
 
                     try:
                         img_bytes = page.images[idx]
                         pil_img = Image.open(io.BytesIO(img_bytes))
                         img_array = np.array(pil_img.convert("RGB"))
 
-                        # --- Step 1: Try formula recognition (Qwen-VL) ---
-                        latex, formula_conf = await formula_recognizer.recognize(
-                            img_bytes
-                        )
+                        # --- Route by image/block type ---
+                        if block_category == "formula":
+                            # Formula recognition (Qwen-VL → LaTeX)
+                            latex, _ = await formula_recognizer.recognize(img_bytes)
+                            if latex:
+                                block.content = block.content.replace(
+                                    placeholder, latex, 1
+                                )
+                                continue
+                            # Fall through to general OCR if formula fails
 
+                        elif block_category == "table":
+                            # Table structure recognition via Qwen-VL
+                            table_md = await self._recognize_table(img_bytes)
+                            if table_md:
+                                block.content = block.content.replace(
+                                    placeholder, "\n" + table_md + "\n", 1
+                                )
+                                continue
+                            # Fall through to general OCR if table fails
+
+                        # --- General: try formula first, then easyocr ---
+                        latex, _ = await formula_recognizer.recognize(img_bytes)
                         if latex:
                             block.content = block.content.replace(
                                 placeholder, latex, 1
                             )
-                            continue  # done for this image
+                            continue
 
-                        # --- Step 2: Fall back to easyocr ---
                         ocr_text = self._ocr_engine.recognize(img_array)
                         ocr_clean = ocr_text.strip() if ocr_text else "[无法识别]"
-
                         block.content = block.content.replace(
                             placeholder, ocr_clean, 1
                         )
 
                     except Exception:
-                        # Replace with a visible marker on failure
                         block.content = block.content.replace(
                             placeholder, "[图片识别失败]", 1
                         )
+
+    async def _recognize_table(self, img_bytes: bytes) -> str | None:
+        """Recognize a table image via Qwen-VL and return markdown table format."""
+        try:
+            from src.generation.llm_client import LLMClient
+
+            llm = LLMClient(provider="qwen")
+            import base64
+
+            b64 = base64.b64encode(img_bytes).decode()
+            prompt = (
+                "请将此图片中的表格转换为 Markdown 表格格式。"
+                "只输出表格的 Markdown，不要输出其他内容。"
+                "如果图片中不包含表格，回复 NOT_A_TABLE。"
+            )
+            result = llm.chat(
+                prompt,
+                system="你是一个表格结构识别专家。将表格图片转换为 Markdown 表格。",
+            )
+            if result and "NOT_A_TABLE" not in result.upper():
+                return result.strip()
+        except Exception:
+            logger.exception("Table recognition via Qwen-VL failed")
+        return None
+
+    async def _recover_tables(self, document: Document, file_path: str) -> None:
+        """Recover table structures for all table layout elements via Qwen-VL.
+
+        For PDF pages: crops the rendered page image at the table bbox,
+        sends to Qwen-VL, and appends the resulting Markdown as a new Block.
+
+        For Word docs: table blocks already have text content extracted by
+        WordLoader — this method is a no-op for those.
+        """
+        if not file_path.lower().endswith(".pdf"):
+            return  # Word table text already extracted
+
+        import io
+
+        import numpy as np
+        from PIL import Image
+
+        from src.domain import Block
+
+        for page in document.pages:
+            # Find table layout elements on this page
+            table_elements = [
+                le for le in page.layout_elements
+                if le.category.lower() in ("table", "table_caption", "table_content")
+            ]
+            if not table_elements:
+                continue
+
+            # Render the page once
+            page_img = self._page_to_array(page, file_path, scale=1.5)
+            if page_img is None:
+                continue
+
+            page_h, page_w = page_img.shape[:2]
+            scale_x = page_w / page.width
+            scale_y = page_h / page.height
+
+            for table_el in table_elements:
+                try:
+                    # Crop table from page image
+                    x0, y0, x1, y1 = _unpack_bbox(table_el.bbox)
+                    px0 = max(0, int(x0 * scale_x))
+                    py0 = max(0, int(y0 * scale_y))
+                    px1 = min(page_w, int(x1 * scale_x))
+                    py1 = min(page_h, int(y1 * scale_y))
+
+                    if px1 <= px0 or py1 <= py0:
+                        continue
+
+                    crop = page_img[py0:py1, px0:px1]
+                    pil_img = Image.fromarray(crop.astype(np.uint8))
+                    buf = io.BytesIO()
+                    pil_img.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+
+                    # Qwen-VL table recognition
+                    markdown = await self._recognize_table(img_bytes)
+                    if not markdown:
+                        continue
+
+                    # Append as a table block
+                    block = Block(
+                        content=markdown,
+                        block_type="table",
+                        page_num=page.page_num,
+                        bbox=(x0, y0, x1, y1),
+                        reading_order=table_el.reading_order or 0,
+                        confidence=table_el.confidence,
+                        metadata={"source": "qwen_vl_table_recovery"},
+                    )
+                    page.blocks.append(block)
+                    page.text += markdown + "\n"
+                    logger.info(
+                        "Table recovered: page %d bbox (%.0f,%.0f,%.0f,%.0f) → %d chars",
+                        page.page_num, x0, y0, x1, y1, len(markdown),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Table recovery failed: page %d bbox %s",
+                        page.page_num, table_el.bbox,
+                    )
 
     @staticmethod
     def _build_layout_from_word_blocks(page: Page) -> list[LayoutElement]:

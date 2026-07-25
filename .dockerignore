@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv*/
+venv*/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Data (mounted as volumes)
+data/uploads/*
+data/vector_db/*
+data/models/*
+data/logs/*
+!data/uploads/.gitkeep
+!data/vector_db/.gitkeep
+!data/models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.log
+server.log
+chunk_debug.txt
+query_result*.txt
+depgraph.txt
+_depgraph.py
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Tests (not needed for prod image)
+tests/
+.pytest_cache/

@@ -38,30 +38,45 @@ class Reranker:
     def rerank(
         self, query: str, results: list[SearchResult], top_k: int = 10
     ) -> list[SearchResult]:
-        """Re-rank search results using the BGE reranker model."""
+        """Re-rank search results using the BGE reranker model (with Redis cache)."""
         if not results:
             return []
         self._lazy_load()
         if self._model is None:
             return results[:top_k]
 
-        import torch
+        from src.cache import RedisCache
 
-        pairs = [[query, r.chunk.content] for r in results]
-        inputs = self._tokenizer(
-            pairs, padding=True, truncation=True, return_tensors="pt", max_length=512
-        )
-        with torch.no_grad():
-            outputs = self._model(**inputs)
-            # BGE reranker outputs raw logits — apply sigmoid to get 0-1 score
-            logits = outputs.logits.squeeze(-1)
-            scores = torch.sigmoid(logits).tolist()
+        cache = RedisCache()
 
-        if isinstance(scores, float):
-            scores = [scores]
+        # Phase 1: check cache for each result
+        uncached_pairs: list[tuple[int, SearchResult]] = []
+        for i, r in enumerate(results):
+            cached = cache.get_rerank_score(query, r.chunk.chunk_id)
+            if cached is not None:
+                r.score = cached
+            else:
+                uncached_pairs.append((i, r))
 
-        for r, s in zip(results, scores):
-            r.score = float(s)
+        if uncached_pairs:
+            import torch
+
+            pairs = [[query, r.chunk.content] for _, r in uncached_pairs]
+            inputs = self._tokenizer(
+                pairs, padding=True, truncation=True, return_tensors="pt", max_length=512
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)
+                logits = outputs.logits.squeeze(-1)
+                if logits.dim() == 0:
+                    scores_list = [float(torch.sigmoid(logits))]
+                else:
+                    scores_list = torch.sigmoid(logits).tolist()
+
+            for (idx, r), s in zip(uncached_pairs, scores_list):
+                r.score = float(s)
+                cache.set_rerank_score(query, r.chunk.chunk_id, float(s))
+
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
 

@@ -15,6 +15,7 @@ class ChunkMetadata:
     chunk_type: str
     bbox: tuple[float, float, float, float] | None = None
     layout_tree_path: list[str] = field(default_factory=list)
+    chunk_level: str = "paragraph"  # "document" | "paragraph" | "sentence"
 
 
 @dataclass

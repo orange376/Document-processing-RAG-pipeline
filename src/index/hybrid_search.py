@@ -36,6 +36,7 @@ class HybridSearch:
         query: str,
         query_embedding: list[float],
         top_k: int = 30,
+        source_files: list[str] | None = None,
     ) -> list[SearchResult]:
         """Hybrid search using RRF fusion.
 
@@ -47,6 +48,9 @@ class HybridSearch:
             Dense vector representation of the query (passed to vector search).
         top_k:
             Number of results to return (default 30).
+        source_files:
+            Optional list of source filenames (on-disk names like
+            ``abc123_report.pdf``) to limit the search scope.
 
         Returns
         -------
@@ -55,9 +59,11 @@ class HybridSearch:
         """
         # 1. Retrieve from both indexes
         vector_chunks: list[Chunk] = self._vector_store.search(
-            query_embedding, top_k=top_k
+            query_embedding, top_k=top_k, source_files=source_files,
         )
-        bm25_results: list[SearchResult] = self._bm25.search(query, top_k=top_k)
+        bm25_results: list[SearchResult] = self._bm25.search(
+            query, top_k=top_k, source_files=source_files,
+        )
 
         # 2. Convert vector chunks to SearchResult objects
         vector_results = [

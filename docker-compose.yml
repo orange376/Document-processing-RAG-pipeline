@@ -1,0 +1,109 @@
+# RAG Pipeline — production deployment stack
+#
+# Usage:
+#   docker-compose up -d              # start all services
+#   docker-compose up -d app redis     # app + cache only
+#   docker-compose logs -f app        # tail app logs
+#   docker-compose down -v            # tear down (keeps data volume)
+
+version: "3.9"
+
+services:
+  # ------------------------------------------------------------------
+  # Main RAG application
+  # ------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      args:
+        DEVICE: ${DEVICE:-cpu}
+    image: rag-pipeline:latest
+    container_name: rag-pipeline-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8001}:8001"
+    environment:
+      - RAG_ENV=production
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-3600}
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+    env_file:
+      - .env  # for DeepSeek / Qwen API keys
+    volumes:
+      - rag_uploads:/app/data/uploads
+      - rag_models:/app/data/models
+      - rag_logs:/app/data/logs
+      # Qdrant local storage (when not using the qdrant service)
+      - rag_vector_db:/app/data/vector_db
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - rag-net
+
+  # ------------------------------------------------------------------
+  # Redis — embedding/reranker/answer cache
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rag-pipeline-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --save 300 1 --loglevel warning
+    volumes:
+      - rag_redis_data:/data
+    networks:
+      - rag-net
+
+  # ------------------------------------------------------------------
+  # Qdrant — vector database (server mode, optional)
+  # ------------------------------------------------------------------
+  # Enable this when you need multi-process access to the vector store
+  # (local mode uses file locking which limits to one process).
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-pipeline-qdrant
+    restart: unless-stopped
+    profiles:
+      - full
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - rag_qdrant_storage:/qdrant/storage
+    networks:
+      - rag-net
+
+  # ------------------------------------------------------------------
+  # Jina reranker — self-hosted (optional, replaces local BGE model)
+  # ------------------------------------------------------------------
+  # reranker:
+  #   image: jinaai/jina-reranker-v2:latest
+  #   container_name: rag-pipeline-reranker
+  #   restart: unless-stopped
+  #   profiles:
+  #     - full
+  #   ports:
+  #     - "${RERANKER_PORT:-8080}:8080"
+  #   networks:
+  #     - rag-net
+
+# --------------------------------------------------------------------
+# Persistent volumes
+# --------------------------------------------------------------------
+volumes:
+  rag_uploads:
+  rag_models:
+  rag_logs:
+  rag_vector_db:
+  rag_redis_data:
+  rag_qdrant_storage:
+
+# --------------------------------------------------------------------
+# Network
+# --------------------------------------------------------------------
+networks:
+  rag-net:
+    driver: bridge

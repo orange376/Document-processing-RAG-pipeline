@@ -54,11 +54,29 @@ class EmbeddingEngine:
         return [e.tolist() for e in embs]
 
     def embed_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
-        """为 Chunk 列表填充 embedding"""
-        texts = [chunk.content for chunk in chunks]
+        """为 Chunk 列表填充 embedding（优先走 Redis 缓存）。"""
+        from src.cache import RedisCache
+        cache = RedisCache()
+
+        # Phase 1: try cache
+        uncached: list[tuple[int, Chunk]] = []
+        for i, chunk in enumerate(chunks):
+            cached_vec = cache.get_embedding(chunk.content)
+            if cached_vec is not None:
+                chunk.embedding = cached_vec
+            else:
+                uncached.append((i, chunk))
+
+        if not uncached:
+            return chunks
+
+        # Phase 2: embed uncached
+        texts = [c.content for _, c in uncached]
         embeddings = self.embed_batch(texts)
-        for chunk, emb in zip(chunks, embeddings):
+        for (idx, chunk), emb in zip(uncached, embeddings):
             chunk.embedding = emb
+            cache.set_embedding(chunk.content, emb)
+
         return chunks
 
 

@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
+from src.utils import setup_logging
+
+from .auth import verify_token, get_limiter
 from .routers import admin, query, review, upload
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# Configure structured logging once at module import
+setup_logging()
 
 
 def create_app() -> FastAPI:
@@ -22,15 +30,22 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="RAG Pipeline API",
         description="Document processing and retrieval-augmented generation API",
-        version="0.1.0",
+        version="0.2.0",
+        dependencies=[Depends(verify_token)],  # global auth
     )
 
+    # ---- Rate limiter ----
+    limiter = get_limiter()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # ---- Routers ----
     app.include_router(upload.router, prefix="/api/v1")
     app.include_router(query.router, prefix="/api/v1")
     app.include_router(review.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
 
-    # Serve static frontend
+    # ---- Serve static frontend ----
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 

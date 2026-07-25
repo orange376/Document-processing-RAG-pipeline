@@ -149,6 +149,7 @@ class StructureAwareChunker:
         self, content: str, filename: str, page_num: int,
         section: str, chunk_type: str, bbox=None,
         layout_tree_path: list[str] | None = None,
+        chunk_level: str = "paragraph",
     ) -> Chunk:
         return Chunk(
             content=content,
@@ -159,5 +160,73 @@ class StructureAwareChunker:
                 chunk_type=chunk_type,
                 bbox=bbox,
                 layout_tree_path=layout_tree_path or [],
+                chunk_level=chunk_level,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Multi-granularity chunking (#17)
+    # ------------------------------------------------------------------
+
+    def fine_chunk(self, document: Document) -> list[Chunk]:
+        """Two-level chunking: paragraph-level → sentence-level.
+
+        Returns both coarse (paragraph) and fine (sentence) chunks,
+        enabling progressive retrieval refinement:
+          1. Coarse search identifies relevant sections
+          2. Fine-grained sentences provide precise answer evidence
+
+        Sentence boundaries: 。！？\n (Chinese period, exclamation, question, newline)
+        """
+        # Level 1: paragraph chunks (existing logic)
+        para_chunks = self.chunk(document)
+
+        # Level 2: sentence-level splitting
+        sentence_chunks: list[Chunk] = list(para_chunks)  # keep paragraphs too
+        for pc in para_chunks:
+            if pc.metadata is None:
+                continue
+            # Only split text paragraphs — don't split formulas/figures/tables
+            if pc.metadata.chunk_type not in ("text",):
+                continue
+            # Skip if too short to split
+            if len(pc.content) < 40:
+                continue
+
+            sentences = self._split_sentences(pc.content)
+            if len(sentences) <= 1:
+                continue  # didn't actually split
+
+            for si, sent in enumerate(sentences):
+                if not sent.strip():
+                    continue
+                sentence_chunks.append(self._make_chunk(
+                    sent.strip(),
+                    filename=pc.metadata.source_file,
+                    page_num=pc.metadata.page_num,
+                    section=pc.metadata.section,
+                    chunk_type=pc.metadata.chunk_type,
+                    bbox=pc.metadata.bbox,
+                    layout_tree_path=list(pc.metadata.layout_tree_path),
+                    chunk_level="sentence",
+                ))
+
+        return sentence_chunks
+
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text at Chinese sentence boundaries, keeping the delimiter with its sentence."""
+        import re
+
+        # Split on sentence-ending punctuation, keeping delimiter
+        parts = re.split(r"(?<=[。！？\n])", text)
+        # Merge very short fragments into the previous sentence
+        merged: list[str] = []
+        for p in parts:
+            if not p.strip():
+                continue
+            if merged and len(p.strip()) < 5:
+                merged[-1] = merged[-1] + p
+            else:
+                merged.append(p)
+        return merged

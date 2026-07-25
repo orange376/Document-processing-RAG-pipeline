@@ -46,6 +46,7 @@ class Retriever:
         query: str,
         embedding: list[float],
         top_k: int = 10,
+        source_files: list[str] | None = None,
     ) -> list[SearchResult]:
         """Run the full retrieval pipeline.
 
@@ -57,6 +58,8 @@ class Retriever:
             Dense query embedding for vector search.
         top_k:
             Number of final results to return (default 10).
+        source_files:
+            Optional list of source filenames to restrict search scope.
 
         Returns
         -------
@@ -66,7 +69,7 @@ class Retriever:
         # Step 1: Hybrid search for initial candidates
         try:
             candidates: list[SearchResult] = self._hybrid.search(
-                query, embedding, top_k=30
+                query, embedding, top_k=30, source_files=source_files,
             )
         except Exception:
             logger.exception("Hybrid search failed, returning empty results")

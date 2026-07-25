@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     confidence_threshold_accept: float = 0.75
     confidence_threshold_reject: float = 0.40
 
+    # === Context Window ===
+    max_context_tokens: int = 3600  # max tokens fed into LLM context (leaves headroom for prompt + answer)
+
+    # === Auth ===
+    api_auth_token: str = ""  # Bearer token for API auth; empty = disabled (open mode)
+
     # === Redis ===
     redis_url: str = "redis://localhost:6379/0"
 
