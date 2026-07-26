@@ -36,6 +36,32 @@ def _guess_mime(data: bytes) -> str:
     return "image/png"  # safe fallback
 
 
+def _upscale_for_recognition(image_bytes: bytes) -> bytes:
+    """Upscale small formula images for better VL model recognition.
+
+    Tiny formula glyphs (e.g. 100×20 px) are hard for VL models to read.
+    This scales images to at least 600 px wide while preserving aspect ratio.
+    """
+    import io
+
+    try:
+        from PIL import Image
+
+        im = Image.open(io.BytesIO(image_bytes))
+        w, h = im.size
+        if w >= 600:
+            return image_bytes  # already large enough
+        scale = max(2, 600 // max(w, 1) + 1)
+        new_w, new_h = w * scale, h * scale
+        rgb = im.convert("RGB")
+        resized = rgb.resize((new_w, new_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return image_bytes
+
+
 class FormulaRecognizer:
     """Recognise math formulas from image bytes using Qwen-VL.
 
@@ -65,6 +91,9 @@ class FormulaRecognizer:
             logger.warning("Qwen API key not set — skipping formula recognition")
             return "", 0.0
 
+        # Upscale tiny formula images before sending to VL model
+        image_bytes = _upscale_for_recognition(image_bytes)
+
         mime = _guess_mime(image_bytes)
         b64 = base64.b64encode(image_bytes).decode("ascii")
         data_uri = f"data:{mime};base64,{b64}"
@@ -76,11 +105,14 @@ class FormulaRecognizer:
                     {
                         "type": "text",
                         "text": (
-                            "识别这张图片中的数学公式。\n"
+                            "请将图片中的数学公式精确转换为LaTeX代码。\n"
                             "要求：\n"
-                            "1. 只输出 LaTeX 代码，用 $$ 包裹\n"
-                            "2. 不要额外说明、不要翻译\n"
-                            "3. 如果图片不是公式，输出空字符串"
+                            "1. 只输出LaTeX代码，用$$包裹\n"
+                            "2. 仔细辨认每个符号、上下标、分式、根号、积分、求和等\n"
+                            "3. 不要添加任何解释文字\n"
+                            "4. 对于分式用 \\frac{分子}{分母}\n"
+                            "5. 对于上下标用 ^ 和 _\n"
+                            "6. 如果图片不是数学公式，输出 NOT_FORMULA"
                         ),
                     },
                     {"type": "image_url", "image_url": {"url": data_uri}},

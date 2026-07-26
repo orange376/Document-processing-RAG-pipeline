@@ -1,4 +1,5 @@
 """Entry point for the RAG pipeline API server."""
+import os
 import sys
 from pathlib import Path
 
@@ -11,4 +12,8 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("run:app", host="0.0.0.0", port=8001, reload=True)
+
+    # Only enable reload when explicitly set (e.g. RAG_RELOAD=1 python run.py).
+    # Auto-reload kills background processing tasks and causes status to hang at "queued".
+    use_reload = os.environ.get("RAG_RELOAD", "").strip() in ("1", "true", "yes")
+    uvicorn.run("run:app", host="0.0.0.0", port=8001, reload=use_reload)

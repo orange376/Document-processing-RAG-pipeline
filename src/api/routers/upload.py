@@ -128,6 +128,10 @@ def _serialize_pages(document) -> list[dict]:
 async def _process_document(task_id: str, file_path: str) -> None:
     """Process a document in the background and update the task store."""
     try:
+        # --- Mark as processing immediately so the frontend shows progress ---
+        task_store[task_id]["status"] = "processing"
+        _save_task_db()
+
         orchestrator = PipelineOrchestrator()
         result = await orchestrator.process_document(file_path)
 

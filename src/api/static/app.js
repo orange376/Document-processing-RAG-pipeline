@@ -53,6 +53,12 @@ function updateDocument(taskId, updates) {
   if (idx >= 0) {
     docs[idx] = { ...docs[idx], ...updates };
     saveDocuments(docs);
+    renderDocuments();  // refresh DOM immediately
+  } else {
+    // New document — add it
+    docs.unshift({ task_id: taskId, ...updates });
+    saveDocuments(docs);
+    renderDocuments();
   }
 }
 

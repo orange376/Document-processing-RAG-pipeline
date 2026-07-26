@@ -157,9 +157,17 @@ class LayoutDetector:
     def _parse_result(
         self, result: Any, scale: float
     ) -> list[LayoutElement]:
-        """Parse PP-DocLayoutV3 prediction result into LayoutElements."""
+        """Parse PP-DocLayoutV3 prediction result into LayoutElements.
+
+        Handles both dict-style results and PaddleX LayoutAnalysisResult objects.
+        """
         elements: list[LayoutElement] = []
-        boxes = result.get("boxes", [])
+        # PP-DocLayoutV3 returns LayoutAnalysisResult objects (attribute access)
+        # or plain dicts (key access) depending on PaddleX version.
+        boxes = (
+            getattr(result, "boxes", None)
+            or result.get("boxes", [])
+        )
 
         for box in boxes:
             cls_id = box.get("cls_id", -1)
@@ -180,7 +188,7 @@ class LayoutDetector:
 
             elements.append(
                 LayoutElement(
-                    bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
+                    bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1, page_num=0),
                     category=category,
                     confidence=score,
                     reading_order=0,

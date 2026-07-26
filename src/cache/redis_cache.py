@@ -33,8 +33,16 @@ _RERANK_TTL = 3600            # 1 hour
 _ANSWER_TTL = 3600            # 1 hour
 
 
+# Module-level flag — only try connecting once per process lifetime
+_redis_disabled: bool = False
+
+
 class RedisCache:
     """Redis-backed cache for expensive RAG pipeline operations.
+
+    When Redis is unreachable, all cache operations silently fall through
+    after the first failed connection attempt — the pipeline still works,
+    just without caching.
 
     Usage::
 
@@ -45,23 +53,12 @@ class RedisCache:
         if vec is None:
             vec = compute_embedding("some text content")
             cache.set_embedding("some text content", vec)
-
-        # Reranker
-        score = cache.get_rerank_score("query", "chk_abc123")
-        if score is None:
-            score = compute_score("query", chunk)
-            cache.set_rerank_score("query", "chk_abc123", score)
-
-        # Answer
-        answer = cache.get_answer("query", "context-here...")
-        if answer is None:
-            answer = llm.chat(prompt)
-            cache.set_answer("query", "context-here...", answer)
     """
 
     def __init__(self):
+        global _redis_disabled
         self._client: object | None = None
-        self._connected: bool = False
+        self._connected: bool = not _redis_disabled
 
     # ------------------------------------------------------------------
     # Embedding cache
@@ -143,7 +140,8 @@ class RedisCache:
             logger.warning("Redis SET failed, cache disabled for this session")
 
     def _lazy_connect(self) -> None:
-        if self._client is not None:
+        global _redis_disabled
+        if self._client is not None or _redis_disabled:
             return
         try:
             import redis
@@ -151,8 +149,8 @@ class RedisCache:
             self._client = redis.Redis.from_url(
                 get_settings().redis_url,
                 decode_responses=True,
-                socket_connect_timeout=3,
-                socket_timeout=3,
+                socket_connect_timeout=2,
+                socket_timeout=2,
             )
             self._client.ping()
             self._connected = True
@@ -160,7 +158,8 @@ class RedisCache:
         except Exception:
             self._client = None
             self._connected = False
-            logger.info("Redis unavailable — cache disabled (set REDIS_URL to enable)")
+            _redis_disabled = True  # don't retry for this process lifetime
+            logger.info("Redis unavailable — cache disabled")
 
 
 # ---------------------------------------------------------------------------

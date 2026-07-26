@@ -38,6 +38,8 @@ _NSMAP = {
     "wp": _WP_NS,
     "a": _A_NS,
     "pic": _PIC_NS,
+    "v": "urn:schemas-microsoft-com:vml",
+    "o": "urn:schemas-microsoft-com:office:office",
 }
 
 # ---------------------------------------------------------------------------
@@ -531,9 +533,15 @@ class WordLoader(DocumentLoader):
     Extracts paragraphs (with headings), math formulas, text-box content,
     and tables.  Uses ``lxml`` XML traversal on top of python-docx to
     capture elements the high-level API misses.
+
+    For VML-embedded formula images (MathType/Equation Editor), reads
+    the raw WMF bytes directly from the docx zip and renders at 300 DPI,
+    bypassing python-docx's low-resolution auto-conversion to PNG.
     """
 
     def load(self, path: str) -> Document:
+        import zipfile
+
         filepath = Path(path)
         if not filepath.exists():
             raise FileNotFoundError(f"文件不存在: {path}")
@@ -541,6 +549,9 @@ class WordLoader(DocumentLoader):
             raise ValueError(f"不支持的文件格式: {filepath.suffix}")
 
         docx_doc = DocxDocument(str(filepath))
+
+        # Open the docx as a zip to access raw WMF files directly
+        _docx_zip = zipfile.ZipFile(str(filepath), "r")
 
         document = Document(
             filename=filepath.name,
@@ -565,7 +576,7 @@ class WordLoader(DocumentLoader):
 
             # --- Build text with image placeholders at correct positions ---
             text, next_img_idx, img_positions = self._build_paragraph_text_with_images(
-                p_elem, rels, page, len(page.images)
+                p_elem, rels, page, len(page.images), docx_zip=_docx_zip,
             )
             text = text.strip()
 
@@ -602,9 +613,10 @@ class WordLoader(DocumentLoader):
                         and re.match(
                             r"(?:"
                             r"第[^，。\n]{0,20}[章节篇]"            # 第一章 xxx, 第2节
-                            r"|(?:\d+\.)+\d*(?:\s+\S+)?"           # 1.1 xxx, 1.1.1
-                            r"|[一二三四五六七八九十]+[、．]\S*"     # 一、xxx
-                            r"|[（(]\d+[）)]\S*"                    # （1）xxx
+                            r"|(?:\d+(?:\.\d+)+)\s+\S{2,}"          # 1.1 xx (multi-level, with text)
+                            r"|[一二三四五六七八九十]+[、．]\s*\S"   # 一、xxx (with content after)
+                            r"|[（(]\d+[）)]\s*\S"                   # （1）xxx
+                            r"|.{1,8}题\s*$"                        # 填空题, 判断题, etc.
                             r")",
                             text_stripped,
                         )
@@ -685,6 +697,7 @@ class WordLoader(DocumentLoader):
         estimated_pages = max(1, len(page.text) // _CHARS_PER_PAGE_ESTIMATE)
         document.total_pages = estimated_pages
 
+        _docx_zip.close()
         return document
 
     # ------------------------------------------------------------------
@@ -697,6 +710,7 @@ class WordLoader(DocumentLoader):
         rels,
         page,
         start_img_idx: int,
+        docx_zip=None,  # zipfile.ZipFile for reading raw WMF
     ) -> tuple[str, int, list[int]]:
         """Walk paragraph XML children in order, building text with image placeholders.
 
@@ -704,6 +718,10 @@ class WordLoader(DocumentLoader):
         to check each run's children for drawings.  When found, the image
         bytes are appended to ``page.images`` and a ``[IMG_N]`` placeholder
         is inserted at the exact text position.
+
+        For VML WMF images (MathType), reads the original WMF from *docx_zip*
+        and renders at 300 DPI for high-quality formula recognition, bypassing
+        python-docx's low-resolution auto-conversion.
 
         Returns
         -------
@@ -718,7 +736,10 @@ class WordLoader(DocumentLoader):
                 tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
 
                 if tag == "r":
-                    # A run may contain either text (<w:t>) or a drawing (<w:drawing>)
+                    # A run may contain text (<w:t>), a drawing (<w:drawing>),
+                    # or an OLE object (<w:object>) with VML image data.
+                    #
+                    # ── Path A: w:drawing → a:blip (modern equation images) ──
                     drawings = child.findall(".//w:drawing", _NSMAP)
                     if drawings:
                         for drawing in drawings:
@@ -736,7 +757,42 @@ class WordLoader(DocumentLoader):
                                         text_parts.append(f"[IMG_{img_idx}]")
                                         image_positions.append(img_idx)
                                         img_counter += 1
-                    else:
+                    # ── Path B: w:object → v:imagedata (MathType/Equation Editor WMF) ──
+                    objects = child.findall(".//w:object", _NSMAP)
+                    if objects:
+                        for obj in objects:
+                            for v_img in obj.findall(".//v:imagedata", _NSMAP):
+                                r_id = v_img.get(f"{{{_R_NS}}}id") or v_img.get("r:id")
+                                if r_id and r_id in rels:
+                                    rel = rels[r_id]
+                                    if "image" in (rel.reltype or ""):
+                                        img_idx = start_img_idx + img_counter
+                                        # Read raw WMF from zip, render at 300 DPI
+                                        # (python-docx auto-converts WMF→PNG at
+                                        #  low resolution; bypass it for quality)
+                                        target_name = rel.target_ref
+                                        if docx_zip and target_name:
+                                            try:
+                                                wmf_bytes = docx_zip.read(
+                                                    f"word/{target_name}"
+                                                )
+                                                page.images.append(
+                                                    _normalize_image_bytes(wmf_bytes)
+                                                )
+                                            except Exception:
+                                                # Fall back to python-docx blob
+                                                page.images.append(
+                                                    _normalize_image_bytes(rel.target_part.blob)
+                                                )
+                                        else:
+                                            page.images.append(
+                                                _normalize_image_bytes(rel.target_part.blob)
+                                            )
+                                        text_parts.append(f"[IMG_{img_idx}]")
+                                        image_positions.append(img_idx)
+                                        img_counter += 1
+                    # If no drawings/objects, collect text normally
+                    if not drawings and not objects:
                         for t_node in child.findall(".//w:t", _NSMAP):
                             if t_node.text:
                                 text_parts.append(t_node.text)
@@ -754,6 +810,27 @@ class WordLoader(DocumentLoader):
                                 page.images.append(
                                     _normalize_image_bytes(rel.target_part.blob)
                                 )
+                                text_parts.append(f"[IMG_{img_idx}]")
+                                image_positions.append(img_idx)
+                                img_counter += 1
+
+                elif tag == "object":
+                    # Top-level OLE object (rare)
+                    for v_img in child.findall(".//v:imagedata", _NSMAP):
+                        r_id = v_img.get(f"{{{_R_NS}}}id") or v_img.get("r:id")
+                        if r_id and r_id in rels:
+                            rel = rels[r_id]
+                            if "image" in (rel.reltype or ""):
+                                img_idx = start_img_idx + img_counter
+                                target_name = rel.target_ref
+                                if docx_zip and target_name:
+                                    try:
+                                        wmf_bytes = docx_zip.read(f"word/{target_name}")
+                                        page.images.append(_normalize_image_bytes(wmf_bytes))
+                                    except Exception:
+                                        page.images.append(_normalize_image_bytes(rel.target_part.blob))
+                                else:
+                                    page.images.append(_normalize_image_bytes(rel.target_part.blob))
                                 text_parts.append(f"[IMG_{img_idx}]")
                                 image_positions.append(img_idx)
                                 img_counter += 1
