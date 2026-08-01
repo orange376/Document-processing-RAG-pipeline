@@ -32,3 +32,18 @@ class TestLatexOCREngine:
         latex, _ = engine.recognize(buf.getvalue())
         # 空结果或 $$ 包裹均可（识别失败返回 ""，不强制非空）
         assert latex == "" or latex.startswith("$$")
+
+    def test_recognize_non_empty_wraps_in_dollars(self, monkeypatch):
+        from src.ocr import latex_ocr as module
+        class StubModel:
+            def __call__(self, img):
+                return "x=1"
+        monkeypatch.setattr(module, "_get_model", lambda: StubModel())
+        from PIL import Image
+        import io
+        engine = module.LatexOCREngine()
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 32), "white").save(buf, format="PNG")
+        latex, conf = engine.recognize(buf.getvalue())
+        assert latex == "$$x=1$$"
+        assert conf == 0.85
