@@ -145,13 +145,13 @@ class TestHybridSearch:
     def test_empty_search(self):
         """空查询应返回空结果。"""
         hybrid = HybridSearch()
-        results = hybrid.search("", [0.1] * 1024, top_k=5)
+        results = hybrid.search("", [0.1] * 768, top_k=5)
         assert isinstance(results, list)
 
     def test_returns_list_of_search_results(self):
         """search 返回 SearchResult 列表。"""
         hybrid = HybridSearch()
-        results = hybrid.search("test", [0.1] * 1024, top_k=5)
+        results = hybrid.search("test", [0.1] * 768, top_k=5)
         for r in results:
             assert isinstance(r, SearchResult)
 
@@ -201,7 +201,7 @@ class TestHybridSearchWithMockData:
         bm25.add_documents(chunks)
 
         hybrid = HybridSearch(bm25_index=bm25)
-        results = hybrid.search("hybrid search", [0.0] * 1024, top_k=5)
+        results = hybrid.search("hybrid search", [0.0] * 768, top_k=5)
 
         # BM25 应能匹配到 doc1
         ids = [r.chunk.chunk_id for r in results]

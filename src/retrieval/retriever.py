@@ -3,7 +3,7 @@
 Usage::
 
     retriever = Retriever()
-    results = retriever.retrieve("query text", embedding=[0.1] * 1024, top_k=10)
+    results = retriever.retrieve("query text", embedding=[0.1] * 768, top_k=10)
 """
 
 from __future__ import annotations

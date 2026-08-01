@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     vector_db_dir: str = "./data/vector_db"
     model_dir: str = "./data/models"
 
+    # === Vector Store ===
+    qdrant_collection: str = "documents_v2"  # bge-base-zh 768 维对应 collection
+    embedding_dim: int = 768
+
     # === GPU ===
     device: str = "cuda"  # "cuda" | "cpu"
 

@@ -26,6 +26,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=24.0.0",
     "pix2tex>=0.1.4",
+    "optimum-onnx[onnxruntime]>=0.1.0",
 ]
 
 [project.optional-dependencies]

@@ -19,28 +19,23 @@ def _get_qdrant_client(db_path: str) -> object:
         return _QDRANT_CLIENT
 
     from qdrant_client import QdrantClient
-    from qdrant_client.http.models import VectorParams, Distance
 
     Path(db_path).mkdir(parents=True, exist_ok=True)
+    _QDRANT_CLIENT = QdrantClient(path=db_path)
+    return _QDRANT_CLIENT
 
-    client = QdrantClient(path=db_path)
 
-    # Check collection exists; create if not
+def _ensure_collection(client: object, collection_name: str, vector_size: int) -> None:
+    """Idempotently create the collection if it doesn't exist."""
+    from qdrant_client.http.models import VectorParams, Distance
+
     existing = client.get_collections()
     names = [c.name for c in existing.collections]
-
-    collection_name = "documents"
     if collection_name not in names:
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(
-                size=1024,  # bge-large-zh-v1.5 输出 1024 维
-                distance=Distance.COSINE,
-            ),
+            vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
         )
-
-    _QDRANT_CLIENT = client
-    return client
 
 
 class VectorStore:
@@ -51,16 +46,20 @@ class VectorStore:
     Qdrant which uses file-level locking.
     """
 
-    def __init__(self, collection_name: str = "documents"):
-        self._settings = get_settings()
-        self._collection_name = collection_name
+    def __init__(self, collection_name: str | None = None):
+        s = get_settings()
+        self._settings = s
+        self._collection_name = collection_name or s.qdrant_collection
+        self._vector_size = s.embedding_dim
         self._client = None
 
     def _lazy_init(self):
         if self._client is not None:
             return
         db_path = str(self._settings.resolved_vector_db_dir)
-        self._client = _get_qdrant_client(db_path)
+        client = _get_qdrant_client(db_path)
+        _ensure_collection(client, self._collection_name, self._vector_size)
+        self._client = client
 
     def index_chunks(self, chunks: list[Chunk]) -> int:
         """将 Chunk 列表写入向量库"""

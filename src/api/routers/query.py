@@ -131,7 +131,7 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         query_embedding = embedding_engine.embed(request.query)
     except Exception:
         logger.exception("Embedding generation failed, using zero vector")
-        query_embedding = [0.0] * 1024
+        query_embedding = [0.0] * 768
 
     # 2. Query rewriting — use rewritten query for BM25 to improve keyword recall
     rewriter = _build_query_rewriter()
@@ -245,7 +245,7 @@ async def handle_query_stream(request: QueryRequest) -> StreamingResponse:
             query_embedding = embedding_engine.embed(request.query)
         except Exception:
             logger.exception("Embedding generation failed, using zero vector")
-            query_embedding = [0.0] * 1024
+            query_embedding = [0.0] * 768
 
         # 2. Query rewriting
         rewriter = _build_query_rewriter()
