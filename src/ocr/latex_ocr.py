@@ -1,26 +1,35 @@
 """本地公式识别引擎 — 基于 pix2tex (LaTeX-OCR)。
 
 将公式图片转换为 LaTeX，本地 CPU 推理，不依赖外部 API。
-权重首次使用时从 HuggingFace 下载（~200MB），之后离线可用。
+权重首次使用时从 GitHub releases 下载（pix2tex 官方模型仓库），
+之后离线可用。
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 _MODEL: object | None = None
 
+# Serializes lazy singleton construction so concurrent asyncio.to_thread calls
+# can't both build the model (check-then-act race).
+_LOAD_LOCK = threading.Lock()
+
 
 def _get_model() -> object:
     """返回共享的 pix2tex LatexOCR 单例。"""
     global _MODEL
-    if _MODEL is None:
-        from pix2tex.cli import LatexOCR
+    if _MODEL is not None:
+        return _MODEL
+    with _LOAD_LOCK:
+        if _MODEL is None:
+            from pix2tex.cli import LatexOCR
 
-        _MODEL = LatexOCR()
+            _MODEL = LatexOCR()
     return _MODEL
 
 
@@ -39,6 +48,8 @@ class LatexOCREngine:
         Returns:
             (latex_string, confidence)。
             latex 用 ``$$...$$`` 包裹；识别失败返回 ("", 0.0)。
+            confidence 是固定占位值 0.85 —— pix2tex 不提供置信度，
+            该值并非由模型计算得出。
         """
         try:
             from PIL import Image

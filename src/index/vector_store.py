@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from src.config import get_settings
 from src.domain import Chunk
@@ -11,6 +12,10 @@ from src.domain import Chunk
 # "already accessed by another instance" errors.
 _QDRANT_CLIENT: object | None = None
 
+# Serializes lazy singleton construction so concurrent asyncio.to_thread calls
+# can't both open the client (check-then-act race on file-locked storage).
+_LOAD_LOCK = threading.Lock()
+
 
 def _get_qdrant_client(db_path: str) -> object:
     """Return the shared QdrantClient singleton, creating it on first call."""
@@ -18,10 +23,12 @@ def _get_qdrant_client(db_path: str) -> object:
     if _QDRANT_CLIENT is not None:
         return _QDRANT_CLIENT
 
-    from qdrant_client import QdrantClient
+    with _LOAD_LOCK:
+        if _QDRANT_CLIENT is None:
+            from qdrant_client import QdrantClient
 
-    Path(db_path).mkdir(parents=True, exist_ok=True)
-    _QDRANT_CLIENT = QdrantClient(path=db_path)
+            Path(db_path).mkdir(parents=True, exist_ok=True)
+            _QDRANT_CLIENT = QdrantClient(path=db_path)
     return _QDRANT_CLIENT
 
 

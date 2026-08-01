@@ -473,6 +473,10 @@ class PipelineOrchestrator:
                         )
                         completed += 1
                         return
+                    # 两个公式引擎（pix2tex + Qwen-VL）均未识别成功。
+                    # 在此返回，避免落入下面的通用分支导致重复调用
+                    # formula_recognizer（重复的 Qwen-VL API 调用）。
+                    return
 
                 elif category == "table":
                     table_md = await self._recognize_table(img_bytes)

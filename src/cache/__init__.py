@@ -4,7 +4,7 @@
 - Reranker scores (by query + chunk_id)
 - LLM answers (by query + context hash)
 
-All cache keys are namespaced: ``rag:embed:{sha256}`` etc.
+All cache keys are namespaced: ``rag:embed:v2:{sha256}`` etc.
 TTL defaults are tuned for each cache tier.
 """
 

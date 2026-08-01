@@ -6,7 +6,7 @@ without caching.
 
 Cache key scheme::
 
-    rag:embed:<sha256 of content>          →  JSON list of floats
+    rag:embed:v2:<sha256 of content>       →  JSON list of floats (768-dim)
     rag:rerank:<md5 of query+chunk_id>     →  float score
     rag:answer:<md5 of query+context>      →  answer string
 
@@ -66,7 +66,7 @@ class RedisCache:
 
     def get_embedding(self, text: str) -> list[float] | None:
         """Return the cached embedding for *text*, or None."""
-        key = f"rag:embed:{_sha256(text)}"
+        key = f"rag:embed:v2:{_sha256(text)}"
         raw = self._get(key)
         if raw is None:
             return None
@@ -77,7 +77,7 @@ class RedisCache:
 
     def set_embedding(self, text: str, vector: list[float]) -> None:
         """Cache *vector* for *text*."""
-        key = f"rag:embed:{_sha256(text)}"
+        key = f"rag:embed:v2:{_sha256(text)}"
         self._set(key, json.dumps(vector), ttl=_EMBED_TTL)
 
     # ------------------------------------------------------------------
