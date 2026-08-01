@@ -14,6 +14,7 @@ build/
 data/uploads/*
 data/vector_db/*
 data/models/*
+data/logs/*
 !data/uploads/.gitkeep
 !data/vector_db/.gitkeep
 !data/models/.gitkeep
