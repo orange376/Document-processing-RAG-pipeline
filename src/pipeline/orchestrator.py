@@ -401,6 +401,14 @@ class PipelineOrchestrator:
 
         formula_recognizer = FormulaRecognizer()
 
+        # 本地公式识别（pix2tex）—— 优先使用，失败回退 Qwen-VL
+        from src.ocr import LatexOCREngine
+        latex_ocr: LatexOCREngine | None = None
+        try:
+            latex_ocr = LatexOCREngine()
+        except Exception:
+            latex_ocr = None
+
         # Collect all (block, img_idx, img_bytes, block_category) tasks
         tasks: list[tuple] = []
         for page in document.pages:
@@ -445,9 +453,23 @@ class PipelineOrchestrator:
             try:
                 # --- Route by image/block type ---
                 if category == "formula":
+                    # 主路径：本地 pix2tex
+                    if latex_ocr is not None:
+                        latex, _ = await asyncio.to_thread(
+                            latex_ocr.recognize, img_bytes
+                        )
+                        if latex:
+                            block.content = block.content.replace(
+                                placeholder, latex, 1
+                            )
+                            completed += 1
+                            return
+                    # 回退：Qwen-VL
                     latex, _ = await formula_recognizer.recognize(img_bytes)
                     if latex:
-                        block.content = block.content.replace(placeholder, latex, 1)
+                        block.content = block.content.replace(
+                            placeholder, latex, 1
+                        )
                         completed += 1
                         return
 
@@ -460,10 +482,23 @@ class PipelineOrchestrator:
                         completed += 1
                         return
 
-                # --- General: try formula first, then easyocr ---
+                # --- General: pix2tex → Qwen-VL → easyocr ---
+                if latex_ocr is not None:
+                    latex, _ = await asyncio.to_thread(
+                        latex_ocr.recognize, img_bytes
+                    )
+                    if latex:
+                        block.content = block.content.replace(
+                            placeholder, latex, 1
+                        )
+                        completed += 1
+                        return
+
                 latex, _ = await formula_recognizer.recognize(img_bytes)
                 if latex:
-                    block.content = block.content.replace(placeholder, latex, 1)
+                    block.content = block.content.replace(
+                        placeholder, latex, 1
+                    )
                     completed += 1
                     return
 
