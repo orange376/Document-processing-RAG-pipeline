@@ -388,7 +388,8 @@ class PipelineOrchestrator:
         116 images complete in seconds instead of minutes.
 
         Routing strategy:
-          - ``block_type == "formula"``  → :class:`FormulaRecognizer` (Qwen-VL → LaTeX)
+          - ``block_type == "formula"``  → :class:`LatexOCREngine` (pix2tex, primary) →
+            :class:`FormulaRecognizer` (Qwen-VL → LaTeX, fallback)
           - ``block_type == "table"``    → Qwen-VL table structure → markdown table
           - ``block_type == "figure"`` or other → Qwen-VL general → easyocr fallback
         """
@@ -482,23 +483,10 @@ class PipelineOrchestrator:
                         completed += 1
                         return
 
-                # --- General: pix2tex → Qwen-VL → easyocr ---
-                if latex_ocr is not None:
-                    latex, _ = await asyncio.to_thread(
-                        latex_ocr.recognize, img_bytes
-                    )
-                    if latex:
-                        block.content = block.content.replace(
-                            placeholder, latex, 1
-                        )
-                        completed += 1
-                        return
-
+                # --- General: try formula first, then easyocr ---
                 latex, _ = await formula_recognizer.recognize(img_bytes)
                 if latex:
-                    block.content = block.content.replace(
-                        placeholder, latex, 1
-                    )
+                    block.content = block.content.replace(placeholder, latex, 1)
                     completed += 1
                     return
 
