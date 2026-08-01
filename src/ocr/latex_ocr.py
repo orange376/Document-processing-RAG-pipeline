@@ -20,7 +20,7 @@ def _get_model() -> object:
     if _MODEL is None:
         from pix2tex.cli import LatexOCR
 
-        _MODEL = LatexOCR(no_cuda=True)
+        _MODEL = LatexOCR()
     return _MODEL
 
 
