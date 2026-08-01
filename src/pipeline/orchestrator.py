@@ -676,16 +676,14 @@ class PipelineOrchestrator:
             from src.generation.llm_client import LLMClient
 
             llm = LLMClient(provider="qwen")
-            import base64
-
-            b64 = base64.b64encode(img_bytes).decode()
             prompt = (
                 "请将此图片中的表格转换为 Markdown 表格格式。"
                 "只输出表格的 Markdown，不要输出其他内容。"
                 "如果图片中不包含表格，回复 NOT_A_TABLE。"
             )
-            result = llm.chat(
+            result = await llm.chat_with_image(
                 prompt,
+                img_bytes,
                 system="你是一个表格结构识别专家。将表格图片转换为 Markdown 表格。",
             )
             if result and "NOT_A_TABLE" not in result.upper():

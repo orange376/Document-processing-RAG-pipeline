@@ -9,6 +9,23 @@ from src.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Magic bytes → MIME type mapping for multimodal image payloads
+_MIME_MAGIC: list[tuple[bytes, str]] = [
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+]
+
+
+def _guess_mime(data: bytes) -> str:
+    """Return the MIME type of *data* based on magic bytes."""
+    for magic, mime in _MIME_MAGIC:
+        if data.startswith(magic):
+            return mime
+    return "image/png"  # safe fallback
+
 
 class LLMClient:
     """LLM API client — supports DeepSeek (default) and Qwen providers.
@@ -30,10 +47,12 @@ class LLMClient:
             self._api_key = api_key or s.qwen_api_key
             self._base = s.qwen_api_base
             self._model = s.qwen_model
+            self._vl_model = s.qwen_vl_model
         else:
             self._api_key = api_key or s.deepseek_api_key
             self._base = s.deepseek_api_base
             self._model = s.deepseek_model
+            self._vl_model = ""
 
     def chat(
         self,
@@ -66,6 +85,66 @@ class LLMClient:
             return data["choices"][0]["message"]["content"]
         except Exception:
             logger.exception("LLM API call failed (%s)", self._provider)
+            return ""
+
+    async def chat_with_image(
+        self,
+        prompt: str,
+        image_bytes: bytes,
+        system: str = "",
+        temperature: float = 0.1,
+        max_tokens: int = 1024,
+    ) -> str:
+        """Multimodal chat: send text + an image to a vision-capable model.
+
+        For ``provider="qwen"`` this uses ``qwen_vl_model`` — NOT the text
+        ``qwen_model``.  The image is embedded as a ``data:`` URI so the VL
+        model can actually see it.
+
+        Returns ``""`` on failure (missing key, API error, empty response).
+        """
+        if not self._api_key:
+            return ""
+
+        model = self._vl_model if self._provider == "qwen" else self._model
+        if not model:
+            return ""
+
+        import base64
+
+        mime = _guess_mime(image_bytes)
+        data_uri = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                ],
+            }
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{self._base}/chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            logger.exception("LLM multimodal API call failed (%s)", self._provider)
             return ""
 
     async def chat_stream(
