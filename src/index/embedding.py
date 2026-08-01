@@ -3,54 +3,62 @@ from __future__ import annotations
 from src.config import get_settings
 from src.domain import Chunk
 
-
-# Module-level singleton for the underlying FlagModel.
-# Loaded once on first use and shared across all EmbeddingEngine instances
-# so that we never pay the 3–10 s reload penalty per request.
+# Module-level singleton for the underlying SentenceTransformer.
+# Loaded once on first use and shared across all EmbeddingEngine instances.
 _MODEL: object | None = None
 
 
 def _get_model(cache_dir: str) -> object:
-    """Return the shared FlagModel singleton, loading it on first call."""
+    """Return the shared SentenceTransformer singleton (bge-base-zh, ONNX backend).
+
+    Tries ONNX runtime first for CPU speed; falls back to torch backend
+    (same 768-dim model) if ONNX export is unavailable.
+    """
     global _MODEL
     if _MODEL is None:
-        from FlagEmbedding import FlagModel
-        import torch
+        from sentence_transformers import SentenceTransformer
 
-        use_fp16 = torch.cuda.is_available()
-        _MODEL = FlagModel(
-            "BAAI/bge-large-zh-v1.5",
-            use_fp16=use_fp16,
-            cache_folder=cache_dir,
-        )
+        try:
+            _MODEL = SentenceTransformer(
+                "BAAI/bge-base-zh-v1.5",
+                cache_folder=cache_dir,
+                backend="onnx",
+                device="cpu",
+            )
+        except Exception:
+            # ONNX 不可用时回退 torch 后端（同模型同维度，仅更慢）
+            _MODEL = SentenceTransformer(
+                "BAAI/bge-base-zh-v1.5",
+                cache_folder=cache_dir,
+                device="cpu",
+            )
     return _MODEL
 
 
 class EmbeddingEngine:
-    """Embedding 引擎 — 基于 bge-large-zh-v1.5
+    """Embedding 引擎 — 基于 bge-base-zh-v1.5 (768 维, ONNX 加速)
 
-    The underlying FlagModel is a module-level singleton so it survives
-    across requests without reloading.
+    The underlying SentenceTransformer is a module-level singleton so it
+    survives across requests without reloading.
     """
 
     def __init__(self):
         self._settings = get_settings()
 
     def unload(self):
-        """No-op — the singleton model stays loaded across requests.
-        Kept for backward-compatibility with callers that call unload()."""
+        """No-op — the singleton model stays loaded across requests."""
         pass
 
     def embed(self, text: str) -> list[float]:
         """对单段文本编码"""
-        model = _get_model(str(self._settings.resolved_model_dir / "bge-large-zh"))
-        emb = model.encode([text])
-        return emb[0].tolist()
+        model = _get_model(str(self._settings.resolved_model_dir / "bge-base-zh"))
+        emb = model.encode(text, show_progress_bar=False)
+        return emb.tolist()
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """批量编码"""
-        model = _get_model(str(self._settings.resolved_model_dir / "bge-large-zh"))
-        embs = model.encode(texts)
+        model = _get_model(str(self._settings.resolved_model_dir / "bge-base-zh"))
+        embs = model.encode(texts, show_progress_bar=False)
         return [e.tolist() for e in embs]
 
     def embed_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
@@ -58,7 +66,6 @@ class EmbeddingEngine:
         from src.cache import RedisCache
         cache = RedisCache()
 
-        # Phase 1: try cache
         uncached: list[tuple[int, Chunk]] = []
         for i, chunk in enumerate(chunks):
             cached_vec = cache.get_embedding(chunk.content)
@@ -70,7 +77,6 @@ class EmbeddingEngine:
         if not uncached:
             return chunks
 
-        # Phase 2: embed uncached
         texts = [c.content for _, c in uncached]
         embeddings = self.embed_batch(texts)
         for (idx, chunk), emb in zip(uncached, embeddings):
