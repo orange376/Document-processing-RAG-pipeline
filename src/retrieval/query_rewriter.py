@@ -9,11 +9,31 @@ class QueryRewriter:
 
     def __init__(self, llm_client=None):
         self._llm = llm_client
+        # In-process memo: repeated identical queries reuse the same rewrite.
+        # LLM generation is non-deterministic even at temperature=0, so without
+        # this the rewritten query would differ on every call and the rerank /
+        # answer caches (keyed on the rewritten query) could never hit.
+        self._memo: dict[str, str] = {}
 
     def rewrite(self, query: str) -> str:
         """改写 query。LLM 不可用时返回原文。"""
         if not self._llm:
             return query
+        if query in self._memo:
+            return self._memo[query]
+
+        cache = None
+        try:
+            from src.cache.redis_cache import RedisCache
+
+            cache = RedisCache()
+            cached = cache.get_rewrite(query)
+            if cached:
+                self._memo[query] = cached
+                return cached
+        except Exception:
+            pass
+
         try:
             prompt = (
                 f"原始查询：{query}\n\n"
@@ -27,8 +47,15 @@ class QueryRewriter:
             result = self._llm.chat(
                 prompt,
                 system="你是一个检索优化专家。将用户查询改写为同义关键词组合以提高检索召回率。",
-                temperature=0,  # deterministic: same query → same rewrite → caches hit
-            )
-            return result.strip() or query
+                temperature=0,
+            ).strip() or query
         except Exception:
             return query
+
+        self._memo[query] = result
+        try:
+            if cache is not None:
+                cache.set_rewrite(query, result)
+        except Exception:
+            pass
+        return result

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _EMBED_TTL = 7 * 24 * 3600    # 7 days
 _RERANK_TTL = 3600            # 1 hour
 _ANSWER_TTL = 3600            # 1 hour
+_REWRITE_TTL = 7 * 24 * 3600  # 7 days — the same query is re-asked repeatedly
 
 
 # Module-level flag — only try connecting once per process lifetime
@@ -99,6 +100,20 @@ class RedisCache:
         """Cache *score* for a (query, chunk_id) pair."""
         key = f"rag:rerank:{_hash_pair(query, chunk_id)}"
         self._set(key, str(score), ttl=_RERANK_TTL)
+
+    # ------------------------------------------------------------------
+    # Query-rewrite cache
+    # ------------------------------------------------------------------
+
+    def get_rewrite(self, query: str) -> str | None:
+        """Return the cached rewritten query, or None."""
+        key = f"rag:rewrite:{_sha256(query)}"
+        return self._get(key)
+
+    def set_rewrite(self, query: str, rewritten: str) -> None:
+        """Cache the LLM rewrite for *query*."""
+        key = f"rag:rewrite:{_sha256(query)}"
+        self._set(key, rewritten, ttl=_REWRITE_TTL)
 
     # ------------------------------------------------------------------
     # Answer cache
