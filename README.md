@@ -140,6 +140,15 @@ python run.py
 
 > 热重载默认关闭（会杀掉后台处理任务）；需要时 `RAG_RELOAD=1 python run.py`。
 
+**可选：Redis 缓存（强烈建议）**
+
+```bash
+# Linux/WSL：sudo apt-get install -y redis-server && redis-server --daemonize yes
+# Windows：启动本地 redis-server 或 WSL 内运行
+```
+
+启用后三级缓存生效（embedding 7d / reranker 1h / answer 1h），重复相同问题从 **~40s 降到 ~2s**。未启动时自动降级为无缓存运行。
+
 ---
 
 ## API 端点
