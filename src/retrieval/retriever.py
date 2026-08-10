@@ -19,6 +19,43 @@ from src.retrieval.reranker import Reranker
 
 logger = logging.getLogger(__name__)
 
+# Function words that carry no domain signal for query expansion.
+_STOPWORDS = frozenset(
+    "的 了 是 在 和 与 及 或 等 中 上 下 为 对 以 将 从 到 通过 包括 以及 采用 "
+    "提供 进行 可以 需要 支持 相关 一个 一种 这些 那些 该 此 这个 我们 本文 "
+    "使用 具有 用于 主要 如下 说明 例如 其中 同时 并且 或者 如果 那么 由于 "
+    "因此 通过 根据 基于 方面 内容".split()
+)
+
+
+def _extract_domain_terms(texts: list[str], exclude: str) -> list[str]:
+    """Extract frequent meaningful terms from *texts* via jieba, excluding those
+    already present in *exclude* (typically the query).
+
+    Used to expand the reranker query so bge-reranker-base — which is heavily
+    lexical-overlap sensitive — can score relevant chunks highly even when the
+    user's query is a question with little term overlap.
+    """
+    try:
+        import jieba
+        import jieba.analyse
+    except Exception:
+        return []
+
+    try:
+        freq: dict[str, int] = {}
+        for text in texts:
+            for w in jieba.cut(text):
+                w = w.strip()
+                if len(w) < 2 or w in _STOPWORDS or w in exclude:
+                    continue
+                freq[w] = freq.get(w, 0) + 1
+        # Order by frequency, then prefer longer (more specific) terms on ties.
+        return sorted(freq, key=lambda w: (freq[w], len(w)), reverse=True)[:10]
+    except Exception:
+        logger.warning("Query term extraction failed", exc_info=True)
+        return []
+
 
 class Retriever:
     """Main retrieval entry point — hybrid search followed by reranker."""
@@ -79,10 +116,20 @@ class Retriever:
             logger.info("Hybrid search returned no candidates")
             return []
 
-        # Step 2: Reranker refines the candidates
+        # Step 2: Reranker refines the candidates.
+        # Enrich the reranker query with domain terms from the top candidates:
+        # bge-reranker-base is lexical-overlap sensitive, so a question-form
+        # query (or a generic rewrite) scores relevant chunks near 0 unless the
+        # query shares their domain terms. Appending frequent terms from the
+        # top hits makes the cross-encoder actually fire on the good matches.
+        terms = _extract_domain_terms(
+            [c.chunk.content for c in candidates[:5]], exclude=query
+        )
+        # Require a few real terms — a single stray token adds noise, not signal.
+        rerank_query = f"{query} {' '.join(terms)}".strip() if len(terms) >= 3 else query
         try:
             reranked: list[SearchResult] = self._reranker.rerank(
-                query, candidates, top_k=top_k
+                rerank_query, candidates, top_k=top_k
             )
         except Exception:
             logger.exception(
