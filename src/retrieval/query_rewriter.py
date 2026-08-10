@@ -27,6 +27,7 @@ class QueryRewriter:
             result = self._llm.chat(
                 prompt,
                 system="你是一个检索优化专家。将用户查询改写为同义关键词组合以提高检索召回率。",
+                temperature=0,  # deterministic: same query → same rewrite → caches hit
             )
             return result.strip() or query
         except Exception:
