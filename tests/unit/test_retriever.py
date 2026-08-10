@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, PropertyMock
 import pytest
 
 from src.domain import Chunk, ChunkMetadata, SearchResult
-from src.retrieval.retriever import Retriever
+from src.retrieval.retriever import Retriever, _extract_domain_terms
 
 
 # ------------------------------------------------------------------
@@ -116,6 +116,20 @@ class TestRetrieverRetrieve:
             "query", [0.1] * 1024, top_k=30, source_files=None
         )
         mock_reranker.rerank.assert_called_once_with("query", candidates, top_k=2)
+
+    def test_extract_domain_terms_finds_terms_and_skips_query(self):
+        """应提取文档特征词，且排除查询中已有的词。"""
+        chunk = (
+            "本系统采用B/S架构为主、C/S架构为辅的混合架构方案，"
+            "总体分为基础设施层、数据存储层、数据访问层、业务逻辑层、展示层和前端UI层。"
+        )
+        terms = _extract_domain_terms([chunk], exclude="技术方案")
+        assert terms  # 至少提取到领域词
+        assert all(t not in ("的", "在", "采用") for t in terms)  # 停用词被过滤
+
+    def test_extract_domain_terms_empty_on_stopwords_only(self):
+        """纯停用词文本不应产出扩展词（避免噪音）。"""
+        assert _extract_domain_terms(["我们采用了以及因此"], exclude="") == []
 
     def test_retrieve_top_k_default(self):
         """不传 top_k 时，默认值为 10。"""
