@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 
 from src.config import get_settings
 from src.domain import Chunk
@@ -17,6 +18,51 @@ _MODEL: object | None = None
 _LOAD_LOCK = threading.Lock()
 
 
+def _resolve_model_dir(cache_dir: str) -> Path | None:
+    """Resolve the local snapshot directory for the embedding model.
+
+    Returns ``None`` if the model isn't cached locally yet (first run) so the
+    caller can fall back to hub loading (which downloads it).
+    """
+    try:
+        from huggingface_hub import snapshot_download
+
+        return Path(
+            snapshot_download(
+                "BAAI/bge-base-zh-v1.5",
+                cache_dir=cache_dir,
+                local_files_only=True,
+            )
+        )
+    except Exception:
+        logger.warning("本地模型目录不可用，将回退 hub 加载", exc_info=True)
+        return None
+
+
+def _persist_onnx_export(model: object, model_dir: Path) -> None:
+    """Persist the exported ONNX model so future startups skip the ~26s re-export.
+
+    sentence-transformers 5.x exports to ONNX in-memory on first load and only
+    writes ``onnx/model.onnx`` if we call ``save_pretrained()`` ourselves. When
+    the model is loaded from a *local* path, ST checks that directory for
+    ``*.onnx`` and skips export if present — so saving here means the conversion
+    is paid once, not on every server start.
+    """
+    try:
+        # Match ST's backend_should_export check exactly: it looks for
+        # ``model.onnx`` at the root or ``onnx/model.onnx`` in the subfolder.
+        # A loose ``**/*.onnx`` glob would wrongly match stray onnx files
+        # elsewhere (e.g. a backup dir) and skip the save.
+        if (model_dir / "onnx" / "model.onnx").exists():
+            return  # already persisted on a previous run
+        model.save_pretrained(str(model_dir))
+        logger.info("ONNX 导出已持久化到 %s/onnx/", model_dir)
+    except Exception:
+        # Non-fatal: the in-memory model still works this run, we just pay the
+        # export cost again on the next process start.
+        logger.warning("ONNX 导出持久化失败（本次运行不受影响）", exc_info=True)
+
+
 def _get_model(cache_dir: str) -> object:
     """Return the shared SentenceTransformer singleton (bge-base-zh, ONNX backend).
 
@@ -30,21 +76,36 @@ def _get_model(cache_dir: str) -> object:
         if _MODEL is None:
             from sentence_transformers import SentenceTransformer
 
+            # Load from the resolved local snapshot path, not the hub id: ST's
+            # ``backend_should_export`` globs the load path for ``*.onnx`` when
+            # it's a local dir, but checks the remote repo when it's a hub id —
+            # so only a local path can skip the ONNX export on the next start.
+            model_dir = _resolve_model_dir(cache_dir)
+            onnx_kwargs = (
+                {"cache_folder": cache_dir} if model_dir is None else {}
+            )
+            model_arg = str(model_dir) if model_dir is not None else "BAAI/bge-base-zh-v1.5"
+
             try:
                 _MODEL = SentenceTransformer(
-                    "BAAI/bge-base-zh-v1.5",
-                    cache_folder=cache_dir,
+                    model_arg,
                     backend="onnx",
                     device="cpu",
+                    **onnx_kwargs,
                 )
             except Exception:
                 logger.warning("ONNX backend unavailable, falling back to torch", exc_info=True)
                 # ONNX 不可用时回退 torch 后端（同模型同维度，仅更慢）
                 _MODEL = SentenceTransformer(
-                    "BAAI/bge-base-zh-v1.5",
+                    model_arg,
                     cache_folder=cache_dir,
                     device="cpu",
                 )
+            else:
+                # Persist the export so the ~26s conversion is paid once, not
+                # on every server start (only meaningful when loading locally).
+                if model_dir is not None:
+                    _persist_onnx_export(_MODEL, model_dir)
     return _MODEL
 
 

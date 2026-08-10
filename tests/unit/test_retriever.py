@@ -112,7 +112,9 @@ class TestRetrieverRetrieve:
         results = retriever.retrieve("query", [0.1] * 1024, top_k=2)
 
         assert results == reranked
-        mock_hybrid.search.assert_called_once_with("query", [0.1] * 1024, top_k=30)
+        mock_hybrid.search.assert_called_once_with(
+            "query", [0.1] * 1024, top_k=30, source_files=None
+        )
         mock_reranker.rerank.assert_called_once_with("query", candidates, top_k=2)
 
     def test_retrieve_top_k_default(self):

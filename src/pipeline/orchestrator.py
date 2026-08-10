@@ -109,6 +109,7 @@ class PipelineOrchestrator:
         is_pdf = path.suffix.lower() == ".pdf"
         self._layout_detector = LayoutDetector() if is_pdf else None
         total_pages = len(document.pages)
+        logger.info("[stage] layout: starting (pages=%d)", total_pages)
         for pi, page in enumerate(document.pages):
             # --- PDF: try PP-DocLayoutV3 on rendered page image ---
             render_t0 = time.perf_counter()
@@ -150,6 +151,7 @@ class PipelineOrchestrator:
         logger.info("[stage] layout_analysis: %.2fs", time.perf_counter() - t0)
 
         # === 阶段 2.5: 图表描述 + 表格结构恢复（Qwen-VL） ===
+        logger.info("[stage] describe: starting (figures + tables)")
         await self._describe_figures(document, str(path))
         await self._recover_tables(document, str(path))
 
@@ -157,6 +159,10 @@ class PipelineOrchestrator:
         t0 = time.perf_counter()
         pages_needing_ocr = [p for p in document.pages if not p.text.strip()]
         has_embedded_images = any(p.images for p in document.pages)
+        logger.info(
+            "[stage] ocr: starting (need_ocr=%d, embedded_images=%s)",
+            len(pages_needing_ocr), has_embedded_images,
+        )
 
         if pages_needing_ocr or has_embedded_images:
             try:
@@ -209,8 +215,10 @@ class PipelineOrchestrator:
                             )
                 except Exception:
                     logger.exception("Scanned page recognition (Qwen-VL) failed")
+        logger.info("[stage] ocr: %.2fs", time.perf_counter() - t0)
 
         # === 阶段 4: 构建版面树 ===
+        logger.info("[stage] tree_build: starting")
         t0 = time.perf_counter()
         tree_builder = LayoutTreeBuilder()
         all_elements = []
@@ -220,6 +228,7 @@ class PipelineOrchestrator:
         logger.info("[stage] tree_build: %.2fs (elements=%d)", time.perf_counter() - t0, len(all_elements))
 
         # === 阶段 5: 结构感知切片（多粒度：段落 + 句子） ===
+        logger.info("[stage] chunk: starting")
         t0 = time.perf_counter()
         chunker = StructureAwareChunker()
         chunks = chunker.fine_chunk(document)
@@ -235,6 +244,7 @@ class PipelineOrchestrator:
 
         indexed = 0
         try:
+            logger.info("[stage] embed+index: starting (chunks=%d)", len(chunks))
             t0 = time.perf_counter()
             self._embedding_engine = EmbeddingEngine()
             chunks = await asyncio.to_thread(self._embedding_engine.embed_chunks, chunks)
