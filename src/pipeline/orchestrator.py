@@ -244,7 +244,7 @@ class PipelineOrchestrator:
                         if img is not None:
                             page_tasks.append((sp, img))
 
-                    BATCH = 5
+                    BATCH = 8
                     for batch_start in range(0, len(page_tasks), BATCH):
                         batch = page_tasks[batch_start:batch_start + BATCH]
                         results = await asyncio.gather(*[
@@ -409,7 +409,7 @@ class PipelineOrchestrator:
                         if img is not None:
                             page_tasks.append((sp, img))
 
-                    BATCH = 5
+                    BATCH = 8
                     for batch_start in range(0, len(page_tasks), BATCH):
                         batch = page_tasks[batch_start:batch_start + BATCH]
                         results = await asyncio.gather(*[
@@ -589,7 +589,7 @@ class PipelineOrchestrator:
                 completed += 1
 
         # Run in batches to avoid overwhelming the Qwen-VL API
-        BATCH = 5  # concurrent API calls
+        BATCH = 8  # concurrent calls
         for batch_start in range(0, len(tasks), BATCH):
             batch = tasks[batch_start:batch_start + BATCH]
             await asyncio.gather(*[
@@ -704,7 +704,7 @@ class PipelineOrchestrator:
             except Exception:
                 completed += 1
 
-        BATCH = 5  # concurrent Qwen-VL calls (429 handled by retry)
+        BATCH = 8  # concurrent Qwen-VL calls (429 handled by retry)
         for batch_start in range(0, len(figure_tasks), BATCH):
             batch = figure_tasks[batch_start:batch_start + BATCH]
             await asyncio.gather(*[
@@ -813,7 +813,7 @@ class PipelineOrchestrator:
         if not tasks:
             return
 
-        BATCH = 5  # concurrent Qwen-VL calls (429 handled by retry)
+        BATCH = 8  # concurrent Qwen-VL calls (429 handled by retry)
         for batch_start in range(0, len(tasks), BATCH):
             batch = tasks[batch_start:batch_start + BATCH]
             markdowns = await asyncio.gather(
