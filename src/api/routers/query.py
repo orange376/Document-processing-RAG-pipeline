@@ -145,10 +145,15 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
     7. Threshold classification
     8. Fallback routing
     """
+    import time
+
+    t_total = time.perf_counter()
+
     # 1+2. Embedding + query rewriting run concurrently — they are independent
     # (embed uses the original query, rewrite produces the BM25 keyword form).
     # Both are blocking calls, so offload to threads: the LLM rewrite takes
     # seconds and would otherwise stall the whole event loop.
+    t0 = time.perf_counter()
     embedding_engine = _build_embedding_engine()
     rewriter = _build_query_rewriter()
 
@@ -164,8 +169,13 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         asyncio.to_thread(rewriter.rewrite, request.query),
     )
     search_query = rewritten_query if rewritten_query else request.query
+    logger.info(
+        "[stage] query embed+rewrite: %.2fs (cached_rewrite=%s)",
+        time.perf_counter() - t0, rewritten_query == request.query,
+    )
 
     # 3. Retrieve (BM25 uses rewritten text for keyword search, original embedding for vector search)
+    t0 = time.perf_counter()
     retriever = _build_retriever()
     results = retriever.retrieve(
         search_query,
@@ -173,9 +183,11 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         top_k=request.top_k,
         source_files=request.document_ids,
     )
+    logger.info("[stage] query retrieve: %.2fs (results=%d)", time.perf_counter() - t0, len(results))
 
     # No results → early return
     if not results:
+        logger.info("[stage] query TOTAL: %.2fs (no results)", time.perf_counter() - t_total)
         return QueryResponse(
             answer="根据检索未找到相关文档内容，无法回答该问题。",
             citations=[],
@@ -185,12 +197,16 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         )
 
     # 4. Build context
+    t0 = time.perf_counter()
     builder = _build_context_builder()
     context_str, citations = builder.build(results)
+    logger.info("[stage] query context: %.2fs (citations=%d)", time.perf_counter() - t0, len(citations))
 
     # 5. Generate answer (using original query for the prompt), with cache
+    t0 = time.perf_counter()
     answer_cache = RedisCache()
     answer = answer_cache.get_answer(request.query, context_str)
+    answer_from_cache = answer is not None
     if answer is None:
         prompt_manager = _build_prompt_manager()
         prompt = prompt_manager.render("qa", query=request.query, context=context_str)
@@ -202,6 +218,10 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
             answer = "抱歉，AI 模型暂时无法生成回答。"
         else:
             answer_cache.set_answer(request.query, context_str, answer)
+    logger.info(
+        "[stage] query answer: %.2fs (cache_hit=%s)",
+        time.perf_counter() - t0, answer_from_cache,
+    )
 
     # 6. Score confidence (query-time signals: reranker scores + result count)
     scorer = _build_confidence_scorer()
@@ -238,6 +258,10 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
         final_answer = answer
         final_citations = citations
 
+    logger.info(
+        "[stage] query TOTAL: %.2fs (decision=%s, confidence=%.2f)",
+        time.perf_counter() - t_total, route_result.decision, overall,
+    )
     return QueryResponse(
         answer=final_answer,
         citations=final_citations,

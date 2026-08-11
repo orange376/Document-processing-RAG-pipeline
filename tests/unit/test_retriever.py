@@ -131,6 +131,17 @@ class TestRetrieverRetrieve:
         """纯停用词文本不应产出扩展词（避免噪音）。"""
         assert _extract_domain_terms(["我们采用了以及因此"], exclude="") == []
 
+    def test_extract_domain_terms_excludes_domain_noise_words(self):
+        """噪音词（对于/关于/过程中）不应进入扩展词。"""
+        chunk = (
+            "对于系统的架构设计，关于数据库表结构，过程中采用分层设计，"
+            "本系统采用B/S架构和Oracle数据库。"
+        )
+        terms = _extract_domain_terms([chunk], exclude="系统设计")
+        assert terms
+        assert all(t not in ("对于", "关于", "过程中", "采用") for t in terms)
+        assert any(t in ("架构", "Oracle") for t in terms)
+
     def test_retrieve_top_k_default(self):
         """不传 top_k 时，默认值为 10。"""
         candidates = [make_result(str(i)) for i in range(20)]
