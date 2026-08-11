@@ -15,6 +15,7 @@ class Reranker:
     def __init__(self):
         self._model = None
         self._tokenizer = None
+        self._device = "cpu"
 
     def _lazy_load(self):
         if self._model is not None:
@@ -34,6 +35,19 @@ class Reranker:
             str(model_dir), torch_dtype="auto"
         )
         self._model.eval()
+
+        # Move to GPU when available — CPU inference over 30 candidate pairs was
+        # the dominant retrieval cost (~10s per query).
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                self._device = "cuda"
+                self._model = self._model.to("cuda")
+                logger.info("Reranker moved to CUDA")
+        except Exception:
+            logger.warning("Failed to move reranker to CUDA, using CPU", exc_info=True)
+            self._device = "cpu"
 
     def rerank(
         self, query: str, results: list[SearchResult], top_k: int = 10
@@ -65,6 +79,8 @@ class Reranker:
             inputs = self._tokenizer(
                 pairs, padding=True, truncation=True, return_tensors="pt", max_length=512
             )
+            if self._device != "cpu":
+                inputs = {k: v.to(self._device) for k, v in inputs.items()}
             with torch.no_grad():
                 outputs = self._model(**inputs)
                 logits = outputs.logits.squeeze(-1)
