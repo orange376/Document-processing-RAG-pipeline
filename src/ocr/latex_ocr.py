@@ -27,9 +27,14 @@ def _get_model() -> object:
         return _MODEL
     with _LOAD_LOCK:
         if _MODEL is None:
+            import torch
+            from munch import Munch
             from pix2tex.cli import LatexOCR
 
-            _MODEL = LatexOCR()
+            # pix2tex 默认 no_cuda=True（强制 CPU）。显式允许 CUDA，
+            # 公式识别在 GPU 机器上快 5-10 倍。
+            args = Munch({"no_cuda": not torch.cuda.is_available()})
+            _MODEL = LatexOCR(args)
     return _MODEL
 
 
