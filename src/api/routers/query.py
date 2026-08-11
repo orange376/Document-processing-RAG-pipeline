@@ -66,10 +66,12 @@ def warmup() -> None:
     """
     try:
         _build_embedding_engine().embed("预热")  # triggers the module _MODEL load
+        logger.info("Embedding model warmed up")
     except Exception:
         logger.exception("Embedding warmup failed")
     try:
         _build_retriever()._reranker._lazy_load()  # warms the real singleton
+        logger.info("Reranker model warmed up")
     except Exception:
         logger.exception("Reranker warmup failed")
 
