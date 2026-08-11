@@ -1,25 +1,47 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
-from src.domain import Document, Page, Block, Chunk, ProcessingStatus
-from src.domain import BBox, LayoutElement
-from src.parser.loader.pdf_loader import PDFLoader
-from src.parser.loader.word_loader import WordLoader
-from src.parser.layout.detector import LayoutDetector
-from src.parser.ocr.engine import OCREngine
-from src.parser.layout_tree import LayoutTreeBuilder, LayoutTreeNode
-from src.parser.chunker import StructureAwareChunker
+
+from src.domain import BBox, Block, Chunk, Document, LayoutElement, Page, ProcessingStatus
 from src.index.embedding import EmbeddingEngine
 from src.index.vector_store import VectorStore
-from src.utils import timed
+from src.parser.chunker import StructureAwareChunker
+from src.parser.layout.detector import LayoutDetector
+from src.parser.layout_tree import LayoutTreeBuilder, LayoutTreeNode
+from src.parser.loader.pdf_loader import PDFLoader
+from src.parser.loader.word_loader import WordLoader
+from src.parser.ocr.engine import OCREngine
+
+# Qwen-VL bills image input by resolution and latency grows with upload size.
+_MAX_VL_IMAGE_EDGE = 1024  # cap the longest edge before sending to Qwen-VL
+
+
+def _encode_vl_image(pil_img: Image.Image) -> bytes:
+    """Downsample + JPEG-encode a crop for Qwen-VL.
+
+    Sending full-res PNG crops is both slower (bigger upload) and more
+    expensive (image tokens scale with resolution). Capping the longest edge
+    at 1024px and using JPEG keeps diagram legibility while cutting both.
+    """
+    import io
+
+    w, h = pil_img.size
+    if max(w, h) > _MAX_VL_IMAGE_EDGE:
+        scale = _MAX_VL_IMAGE_EDGE / max(w, h)
+        pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    pil_img.convert("RGB").save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 @dataclass
@@ -152,8 +174,12 @@ class PipelineOrchestrator:
 
         # === 阶段 2.5: 图表描述 + 表格结构恢复（Qwen-VL） ===
         logger.info("[stage] describe: starting (figures + tables)")
-        await self._describe_figures(document, str(path))
-        await self._recover_tables(document, str(path))
+        # Figure description + table recovery are independent Qwen-VL workloads
+        # over disjoint regions — run them concurrently (both are API-latency bound).
+        await asyncio.gather(
+            self._describe_figures(document, str(path)),
+            self._recover_tables(document, str(path)),
+        )
 
         # === 阶段 3: OCR（仅对缺文本页面执行） ===
         t0 = time.perf_counter()
@@ -404,10 +430,9 @@ class PipelineOrchestrator:
           - ``block_type == "figure"`` or other → Qwen-VL general → easyocr fallback
         """
         import asyncio
-        import io
 
         import numpy as np
-        from PIL import Image
+
         from src.ocr import FormulaRecognizer
 
         formula_recognizer = FormulaRecognizer()
@@ -505,6 +530,7 @@ class PipelineOrchestrator:
                     return
 
                 import io as _io
+
                 from PIL import Image as _Image
 
                 pil_img = _Image.open(_io.BytesIO(img_bytes))
@@ -524,7 +550,6 @@ class PipelineOrchestrator:
                 completed += 1
 
         # Run in batches to avoid overwhelming the Qwen-VL API
-        import math
         BATCH = 5  # concurrent API calls
         for batch_start in range(0, len(tasks), BATCH):
             batch = tasks[batch_start:batch_start + BATCH]
@@ -547,11 +572,9 @@ class PipelineOrchestrator:
         :meth:`_ocr_embedded_images`).
         """
         import asyncio
-        import io
 
         import numpy as np
-        from PIL import Image
-        from src.generation.llm_client import LLMClient
+
         from src.domain import Block
 
         if not file_path.lower().endswith(".pdf"):
@@ -585,9 +608,7 @@ class PipelineOrchestrator:
                         continue
                     crop = page_img[py0:py1, px0:px1]
                     pil_img = Image.fromarray(crop.astype(np.uint8))
-                    buf = io.BytesIO()
-                    pil_img.save(buf, format="PNG")
-                    figure_tasks.append((page, fe, buf.getvalue(), (x0, y0, x1, y1)))
+                    figure_tasks.append((page, fe, _encode_vl_image(pil_img), (x0, y0, x1, y1)))
                 except Exception:
                     continue
 
@@ -601,54 +622,25 @@ class PipelineOrchestrator:
         async def _describe_one(page, fe, img_bytes, bbox_coords) -> None:
             nonlocal completed
             try:
-                import base64
+                from src.generation.llm_client import LLMClient
 
-                import httpx
-                from src.config import get_settings
-
-                s = get_settings()
-                if not s.qwen_api_key:
+                if not get_settings().qwen_api_key:
                     completed += 1
                     return
 
-                mime = "image/png"
-                b64 = base64.b64encode(img_bytes).decode("ascii")
-                data_uri = f"data:{mime};base64,{b64}"
-
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "请详细描述这张图片的内容。"
-                                    "如果是架构图、流程图、用例图、ER图或图表，"
-                                    "请用中文仔细描述图中的节点、箭头、关系、层次结构、"
-                                    "数据流向等，使读者能够仅凭文字完全理解图表含义。"
-                                    "如果是普通图片或照片，请简要描述内容。"
-                                    "请直接用中文回复，不要加前缀。"
-                                ),
-                            },
-                            {"type": "image_url", "image_url": {"url": data_uri}},
-                        ],
-                    }
-                ]
-
-                async with httpx.AsyncClient(timeout=60) as client:
-                    resp = await client.post(
-                        f"{s.qwen_api_base}/chat/completions",
-                        headers={"Authorization": f"Bearer {s.qwen_api_key}"},
-                        json={
-                            "model": s.qwen_vl_model,
-                            "messages": messages,
-                            "max_tokens": 1024,
-                            "temperature": 0.3,
-                        },
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    description = data["choices"][0]["message"]["content"].strip()
+                prompt = (
+                    "请详细描述这张图片的内容。"
+                    "如果是架构图、流程图、用例图、ER图或图表，"
+                    "请用中文仔细描述图中的节点、箭头、关系、层次结构、"
+                    "数据流向等，使读者能够仅凭文字完全理解图表含义。"
+                    "如果是普通图片或照片，请简要描述内容。"
+                    "请直接用中文回复，不要加前缀。"
+                )
+                description = await LLMClient(provider="qwen").chat_with_image(
+                    prompt,
+                    img_bytes,
+                    system="你是一个图表理解专家。将图片内容用中文详细描述。",
+                )
 
                 if description and len(description.strip()) > 10:
                     x0, y0, x1, y1 = bbox_coords
@@ -667,7 +659,7 @@ class PipelineOrchestrator:
             except Exception:
                 completed += 1
 
-        BATCH = 3
+        BATCH = 5  # concurrent Qwen-VL calls (429 handled by retry)
         for batch_start in range(0, len(figure_tasks), BATCH):
             batch = figure_tasks[batch_start:batch_start + BATCH]
             await asyncio.gather(*[
@@ -715,10 +707,8 @@ class PipelineOrchestrator:
             return  # Word table text already extracted
 
         import asyncio
-        import io
 
         import numpy as np
-        from PIL import Image
 
         from src.domain import Block
 
@@ -757,16 +747,14 @@ class PipelineOrchestrator:
 
                     crop = page_img[py0:py1, px0:px1]
                     pil_img = Image.fromarray(crop.astype(np.uint8))
-                    buf = io.BytesIO()
-                    pil_img.save(buf, format="PNG")
-                    tasks.append((page, table_el, buf.getvalue(), x0, y0, x1, y1))
+                    tasks.append((page, table_el, _encode_vl_image(pil_img), x0, y0, x1, y1))
                 except Exception:
                     logger.exception("Table crop failed: page %d", page.page_num)
 
         if not tasks:
             return
 
-        BATCH = 4  # concurrent Qwen-VL calls
+        BATCH = 5  # concurrent Qwen-VL calls (429 handled by retry)
         for batch_start in range(0, len(tasks), BATCH):
             batch = tasks[batch_start:batch_start + BATCH]
             markdowns = await asyncio.gather(

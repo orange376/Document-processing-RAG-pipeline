@@ -50,6 +50,23 @@ class TestLLMClient:
         from src.generation import LLMClient as LC
         assert LC is LLMClient
 
+    def test_chat_with_image_retries_on_429(self, httpx_mock):
+        """429 应触发重试，最终成功返回。"""
+        import asyncio
+
+        httpx_mock.add_response(status_code=429)
+        httpx_mock.add_response(
+            status_code=200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+        client = LLMClient(provider="qwen", api_key="test-key")
+        result = asyncio.run(
+            LLMClient.chat_with_image(client, "描述", b"fake-image-bytes")
+        )
+        assert result == "ok"
+        # 429 一次 + 成功一次 = 2 次请求
+        assert len(httpx_mock.get_requests()) == 2
+
     def test_provider_deepseek_default(self, monkeypatch):
         # Use clean defaults so .env override doesn't affect assertion
         monkeypatch.setattr(

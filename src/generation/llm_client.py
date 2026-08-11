@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
 
 import httpx
+
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Retry on throttling / transient failures — Qwen-VL is API-bound and a 429
+# would otherwise silently drop a figure/table description (quality loss).
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 3
 
 # Magic bytes → MIME type mapping for multimodal image payloads
 _MIME_MAGIC: list[tuple[bytes, str]] = [
@@ -128,24 +135,40 @@ class LLMClient:
             }
         )
 
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    f"{self._base}/chat/completions",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            logger.exception("LLM multimodal API call failed (%s)", self._provider)
-            return ""
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        f"{self._base}/chat/completions",
+                        headers={"Authorization": f"Bearer {self._api_key}"},
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "Qwen-VL API %s, retry %d/%d in %.1fs",
+                        status, attempt + 1, _MAX_RETRIES, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+            except (httpx.TransportError, httpx.TimeoutException):
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise
+        logger.error("LLM multimodal API call failed after %d retries (%s)", _MAX_RETRIES, self._provider)
+        return ""
 
     async def chat_stream(
         self,
