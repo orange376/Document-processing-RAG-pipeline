@@ -235,12 +235,25 @@ class PipelineOrchestrator:
                 try:
                     from src.ocr import PageRecognizer
                     page_recognizer = PageRecognizer()
+
+                    # Render all scanned pages first, then recognise in parallel
+                    # batches — each recognize_page is a Qwen-VL API call.
+                    page_tasks: list[tuple] = []  # (page, img)
                     for sp in scanned_pages:
                         img = self._page_to_array(sp, str(path), scale=1.5)
-                        if img is None:
-                            continue
-                        markdown, conf = await page_recognizer.recognize_page(img)
-                        if markdown:
+                        if img is not None:
+                            page_tasks.append((sp, img))
+
+                    BATCH = 5
+                    for batch_start in range(0, len(page_tasks), BATCH):
+                        batch = page_tasks[batch_start:batch_start + BATCH]
+                        results = await asyncio.gather(*[
+                            page_recognizer.recognize_page(img)
+                            for _, img in batch
+                        ])
+                        for (sp, _), (markdown, conf) in zip(batch, results):
+                            if not markdown:
+                                continue
                             sp.text = markdown
                             sp.blocks = [Block(
                                 content=markdown,
@@ -389,12 +402,23 @@ class PipelineOrchestrator:
                 try:
                     from src.ocr import PageRecognizer
                     page_recognizer = PageRecognizer()
+
+                    page_tasks: list[tuple] = []
                     for sp in scanned_pages:
                         img = self._page_to_array(sp, str(path), scale=1.5)
-                        if img is None:
-                            continue
-                        markdown, conf = await page_recognizer.recognize_page(img)
-                        if markdown:
+                        if img is not None:
+                            page_tasks.append((sp, img))
+
+                    BATCH = 5
+                    for batch_start in range(0, len(page_tasks), BATCH):
+                        batch = page_tasks[batch_start:batch_start + BATCH]
+                        results = await asyncio.gather(*[
+                            page_recognizer.recognize_page(img)
+                            for _, img in batch
+                        ])
+                        for (sp, _), (markdown, conf) in zip(batch, results):
+                            if not markdown:
+                                continue
                             sp.text = markdown
                             sp.blocks = [Block(
                                 content=markdown,
@@ -761,6 +785,14 @@ class PipelineOrchestrator:
             scale_y = page_h / page.height
 
             for table_el in table_elements:
+                # If the PDF already extracted the table's text, the content is
+                # searchable — skip the Qwen-VL structure-recovery API call.
+                if self._region_has_text(page, table_el.bbox):
+                    logger.info(
+                        "Table skipped (text already in PDF): page %d",
+                        page.page_num,
+                    )
+                    continue
                 try:
                     # Crop table from page image
                     x0, y0, x1, y1 = _unpack_bbox(table_el.bbox)
@@ -810,6 +842,30 @@ class PipelineOrchestrator:
                 min(batch_start + BATCH, len(tasks)), len(tasks),
                 batch_start + 1, min(batch_start + BATCH, len(tasks)),
             )
+
+    @staticmethod
+    def _region_has_text(page: Page, bbox) -> bool:
+        """True if the PDF already extracted substantial text overlapping *bbox*.
+
+        PyMuPDF pulls table cell text into the page's text stream, so a
+        text-bearing table region is already searchable — Qwen-VL structure
+        recovery is then a nice-to-have, not a requirement. Skipping it saves
+        API calls without losing searchability.
+        """
+        if not page.raw_dict:
+            return False
+        x0, y0, x1, y1 = _unpack_bbox(bbox)
+        chars = 0
+        for blk in page.raw_dict.get("blocks", []):
+            if blk.get("type", 0) != 0:  # 0 = text block
+                continue
+            bx0, by0, bx1, by1 = blk.get("bbox") or (0, 0, 0, 0)
+            if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
+                continue  # no overlap with the table bbox
+            for line in blk.get("lines", []):
+                for span in line.get("spans", []):
+                    chars += len(span.get("text", ""))
+        return chars > 30
 
     @staticmethod
     def _build_layout_from_word_blocks(page: Page) -> list[LayoutElement]:
