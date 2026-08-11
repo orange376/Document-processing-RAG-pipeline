@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
@@ -15,10 +18,27 @@ from src.utils import setup_logging
 from .auth import verify_token, get_limiter
 from .routers import admin, query, review, upload
 
+logger = logging.getLogger(__name__)
+
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # Configure structured logging once at module import
 setup_logging()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """App lifespan: warm inference models in the background at startup.
+
+    The embed + reranker models load lazily on first use, which costs ~33s on
+    the first query after a restart. Loading them in the background at startup
+    moves that cost off the critical path without blocking API startup.
+    """
+    warmup_task = asyncio.create_task(asyncio.to_thread(query.warmup))
+    try:
+        yield
+    finally:
+        warmup_task.cancel()
 
 
 def create_app() -> FastAPI:
@@ -32,6 +52,7 @@ def create_app() -> FastAPI:
         description="Document processing and retrieval-augmented generation API",
         version="0.2.0",
         dependencies=[Depends(verify_token)],  # global auth
+        lifespan=lifespan,
     )
 
     # ---- Rate limiter ----

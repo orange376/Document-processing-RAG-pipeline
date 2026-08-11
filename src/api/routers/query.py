@@ -57,6 +57,23 @@ def _build_embedding_engine() -> EmbeddingEngine:
     return _embedding_engine_instance
 
 
+def warmup() -> None:
+    """Pre-load the lazy inference models so the first query is fast.
+
+    Without this, the first query after a server restart pays model loading on
+    top of the LLM calls (measured ~33s: embed ONNX export-free load ~9s +
+    reranker load). Called once in the background at app startup.
+    """
+    try:
+        _build_embedding_engine().embed("预热")  # triggers the module _MODEL load
+    except Exception:
+        logger.exception("Embedding warmup failed")
+    try:
+        _build_retriever()._reranker._lazy_load()  # warms the real singleton
+    except Exception:
+        logger.exception("Reranker warmup failed")
+
+
 def _build_context_builder() -> ContextBuilder:
     global _context_builder_instance
     if _context_builder_instance is None:

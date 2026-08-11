@@ -714,6 +714,7 @@ class PipelineOrchestrator:
         if not file_path.lower().endswith(".pdf"):
             return  # Word table text already extracted
 
+        import asyncio
         import io
 
         import numpy as np
@@ -721,6 +722,9 @@ class PipelineOrchestrator:
 
         from src.domain import Block
 
+        # Collect every table crop first, then recognise in parallel batches —
+        # Qwen-VL API calls are the bottleneck and are sequential otherwise.
+        tasks: list[tuple] = []  # (page, table_el, img_bytes, x0, y0, x1, y1)
         for page in document.pages:
             # Find table layout elements on this page
             table_elements = [
@@ -755,34 +759,42 @@ class PipelineOrchestrator:
                     pil_img = Image.fromarray(crop.astype(np.uint8))
                     buf = io.BytesIO()
                     pil_img.save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
-
-                    # Qwen-VL table recognition
-                    markdown = await self._recognize_table(img_bytes)
-                    if not markdown:
-                        continue
-
-                    # Append as a table block
-                    block = Block(
-                        content=markdown,
-                        block_type="table",
-                        page_num=page.page_num,
-                        bbox=(x0, y0, x1, y1),
-                        reading_order=table_el.reading_order or 0,
-                        confidence=table_el.confidence,
-                        metadata={"source": "qwen_vl_table_recovery"},
-                    )
-                    page.blocks.append(block)
-                    page.text += markdown + "\n"
-                    logger.info(
-                        "Table recovered: page %d bbox (%.0f,%.0f,%.0f,%.0f) → %d chars",
-                        page.page_num, x0, y0, x1, y1, len(markdown),
-                    )
+                    tasks.append((page, table_el, buf.getvalue(), x0, y0, x1, y1))
                 except Exception:
-                    logger.exception(
-                        "Table recovery failed: page %d bbox %s",
-                        page.page_num, table_el.bbox,
-                    )
+                    logger.exception("Table crop failed: page %d", page.page_num)
+
+        if not tasks:
+            return
+
+        BATCH = 4  # concurrent Qwen-VL calls
+        for batch_start in range(0, len(tasks), BATCH):
+            batch = tasks[batch_start:batch_start + BATCH]
+            markdowns = await asyncio.gather(
+                *(self._recognize_table(t[2]) for t in batch),
+            )
+            for (page, table_el, _, x0, y0, x1, y1), markdown in zip(batch, markdowns):
+                if not markdown:
+                    continue
+                # Append as a table block
+                page.blocks.append(Block(
+                    content=markdown,
+                    block_type="table",
+                    page_num=page.page_num,
+                    bbox=(x0, y0, x1, y1),
+                    reading_order=table_el.reading_order or 0,
+                    confidence=table_el.confidence,
+                    metadata={"source": "qwen_vl_table_recovery"},
+                ))
+                page.text += markdown + "\n"
+                logger.info(
+                    "Table recovered: page %d bbox (%.0f,%.0f,%.0f,%.0f) → %d chars",
+                    page.page_num, x0, y0, x1, y1, len(markdown),
+                )
+            logger.info(
+                "Tables recovered: %d/%d (batch %d-%d)",
+                min(batch_start + BATCH, len(tasks)), len(tasks),
+                batch_start + 1, min(batch_start + BATCH, len(tasks)),
+            )
 
     @staticmethod
     def _build_layout_from_word_blocks(page: Page) -> list[LayoutElement]:
