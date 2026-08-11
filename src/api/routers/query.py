@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json as json_mod
 import logging
@@ -144,17 +145,24 @@ async def handle_query(request: QueryRequest) -> QueryResponse:
     7. Threshold classification
     8. Fallback routing
     """
-    # 1. Embedding
+    # 1+2. Embedding + query rewriting run concurrently — they are independent
+    # (embed uses the original query, rewrite produces the BM25 keyword form).
+    # Both are blocking calls, so offload to threads: the LLM rewrite takes
+    # seconds and would otherwise stall the whole event loop.
     embedding_engine = _build_embedding_engine()
-    try:
-        query_embedding = embedding_engine.embed(request.query)
-    except Exception:
-        logger.exception("Embedding generation failed, using zero vector")
-        query_embedding = [0.0] * 768
-
-    # 2. Query rewriting — use rewritten query for BM25 to improve keyword recall
     rewriter = _build_query_rewriter()
-    rewritten_query = rewriter.rewrite(request.query)
+
+    def _embed() -> list[float]:
+        try:
+            return embedding_engine.embed(request.query)
+        except Exception:
+            logger.exception("Embedding generation failed, using zero vector")
+            return [0.0] * 768
+
+    query_embedding, rewritten_query = await asyncio.gather(
+        asyncio.to_thread(_embed),
+        asyncio.to_thread(rewriter.rewrite, request.query),
+    )
     search_query = rewritten_query if rewritten_query else request.query
 
     # 3. Retrieve (BM25 uses rewritten text for keyword search, original embedding for vector search)
