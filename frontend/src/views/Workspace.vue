@@ -20,7 +20,9 @@
         <div v-for="(m, i) in current.messages" :key="i" class="msg" :class="m.role">
           <div class="msg-avatar">{{ m.role === 'user' ? '🧑' : '🤖' }}</div>
           <div class="msg-body">
-            <div class="msg-content">{{ m.content }}</div>
+            <div class="msg-content">
+              <span v-if="m.role === 'assistant' && !m.content && streaming && i === current.messages.length - 1" class="thinking">⏳ 正在检索文档…</span>{{ m.content }}
+            </div>
             <div v-if="m.role === 'assistant' && m.meta" class="msg-meta">
               <div class="meta-row">
                 <el-tag size="small" :type="m.meta.needs_review ? 'warning' : 'success'" effect="light">
@@ -35,14 +37,6 @@
                   <span class="cite-page">第{{ c.page_num }}页</span>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-        <div v-if="streaming" class="msg assistant">
-          <div class="msg-avatar">🤖</div>
-          <div class="msg-body">
-            <div class="msg-content" v-if="!current.messages.length || current.messages[current.messages.length-1].role !== 'assistant'">
-              <span class="thinking">⏳ 正在检索文档…</span>
             </div>
           </div>
         </div>
