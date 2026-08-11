@@ -266,7 +266,6 @@ class PipelineOrchestrator:
         )
 
         # === 阶段 6: Embedding + 索引（CPU 密集型，放入线程池） ===
-        import asyncio
 
         indexed = 0
         try:
@@ -429,7 +428,6 @@ class PipelineOrchestrator:
           - ``block_type == "table"``    → Qwen-VL table structure → markdown table
           - ``block_type == "figure"`` or other → Qwen-VL general → easyocr fallback
         """
-        import asyncio
 
         import numpy as np
 
@@ -571,7 +569,6 @@ class PipelineOrchestrator:
         Only runs for PDFs (Word embedded images are handled by
         :meth:`_ocr_embedded_images`).
         """
-        import asyncio
 
         import numpy as np
 
@@ -705,8 +702,6 @@ class PipelineOrchestrator:
         """
         if not file_path.lower().endswith(".pdf"):
             return  # Word table text already extracted
-
-        import asyncio
 
         import numpy as np
 
