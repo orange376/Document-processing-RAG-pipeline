@@ -17,9 +17,11 @@ services:
       context: .
       args:
         DEVICE: ${DEVICE:-cpu}
-    image: rag-pipeline:latest
+    image: rag-pipeline:${DEVICE:-cpu}
     container_name: rag-pipeline-app
     restart: unless-stopped
+    profiles:
+      - gpu            # GPU 版需 --profile gpu 显式启用（默认 CPU 模式）
     ports:
       - "${APP_PORT:-8001}:8001"
     environment:
@@ -28,6 +30,14 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-3600}
       - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+    # GPU 透传：需要 nvidia-container-toolkit（Docker Desktop WSL2 后端自带）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     env_file:
       - .env  # for DeepSeek / Qwen API keys
     volumes:

@@ -126,9 +126,26 @@ wsl -d Ubuntu -e bash -c "cd ~/rag-pipeline && source .venv/bin/activate && pyth
 | 整文档处理 | ~8 分钟 | **58s (8x)** |
 | 查询 | — | 0.799 置信度，5 引用 ✓ |
 
+## Docker GPU 部署（代码就绪）
+
+`Dockerfile` + `docker-compose.yml` 已支持 GPU：
+
+```bash
+# 构建（torch cu126 wheel 最慢，~2GB；需 Docker registry 镜像加速）
+docker build --build-arg DEVICE=gpu -t rag-pipeline:gpu .
+# 运行（nvidia-container-toolkit / Docker Desktop WSL2 后端）
+docker compose --profile gpu up -d
+```
+
+要点：
+- GPU 镜像通过 pip 打包 CUDA runtime（torch cu126 + paddlepaddle-gpu），无需 nvidia/cuda 基础镜像
+- 构建内 pip 走清华镜像，torch 走 pytorch.org cu126 索引
+- compose 用 `deploy.resources.reservations.devices` 声明 GPU（`--profile gpu` 显式启用）
+- **⚠️ 本机实测**：docker.io 被墙，真实镜像拉取超慢（40MB 的 python 基础镜像都拉不动，镜像源仅对小型镜像可用）。**实际构建需在可拉取 docker.io 镜像的网络环境**（或先本地 docker load 基础镜像）。
+
 ## 已知限制
 
-1. **ONNX 导出不持久化**：每次服务器启动首次 embed 重新导出 (~26s)。可优化：预导出保存 `model.onnx`。
-2. **Redis 未运行**：缓存禁用（不影响功能）。
+1. **Redis**：systemd 管理（`systemd=true`），WSL 重启自动拉起；`scripts/start_redis.sh` 为兜底脚本。
+2. **ONNX 导出持久化**：已实现（迭代 7），启动热加载 ~9s。
 3. **Qwen-VL 图表描述**：需 `.env` 有 `qwen_api_key`（已从 Windows 复制）。
 4. WSL 内存 7.6GB 偏紧，模型逐个加载（代码已 unload）。
