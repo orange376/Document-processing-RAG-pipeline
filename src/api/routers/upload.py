@@ -261,6 +261,29 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
 
 
 @router.get(
+    "/documents",
+    summary="List all uploaded documents",
+)
+async def list_documents() -> list[dict]:
+    """Return a summary of every upload task (newest first)."""
+    entries = []
+    for task_id, task in task_store.items():
+        entries.append({
+            "task_id": task_id,
+            "filename": task.get("filename", ""),
+            "status": task.get("status", ""),
+            "indexed_count": task.get("indexed_count", 0),
+            "chunk_count": task.get("chunk_count", 0),
+            "total_pages": task.get("total_pages", 0),
+            "confidence": task.get("confidence", 0.0),
+            "needs_review": task.get("needs_review", False),
+            "error": task.get("error", ""),
+            "file_type": task.get("file_type", ""),
+        })
+    return sorted(entries, key=lambda e: e["task_id"], reverse=True)
+
+
+@router.get(
     "/documents/{task_id}/status",
     summary="Get document processing status",
 )

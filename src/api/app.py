@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
@@ -20,7 +20,9 @@ from .routers import admin, query, review, upload
 
 logger = logging.getLogger(__name__)
 
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
+# New Vue SPA build (frontend/dist) — falls back to the legacy static page.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+_LEGACY_STATIC = Path(__file__).resolve().parent / "static"
 
 # Configure structured logging once at module import
 setup_logging()
@@ -66,13 +68,24 @@ def create_app() -> FastAPI:
     app.include_router(review.router, prefix="/api/v1")
     app.include_router(admin.router, prefix="/api/v1")
 
-    # ---- Serve static frontend ----
-    if _STATIC_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    # ---- Serve the SPA frontend (Vue build), with history-mode fallback ----
+    spa_dir = _FRONTEND_DIST if _FRONTEND_DIST.is_dir() else None
+    if spa_dir is not None:
+        assets_dir = spa_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa(full_path: str) -> HTMLResponse:
+            # API routes are matched first; anything else is SPA routing.
+            html = (spa_dir / "index.html").read_text(encoding="utf-8")
+            return HTMLResponse(html)
+    elif _LEGACY_STATIC.is_dir():
+        app.mount("/static", StaticFiles(directory=str(_LEGACY_STATIC)), name="static")
 
         @app.get("/", include_in_schema=False)
         async def index() -> HTMLResponse:
-            html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            html = (_LEGACY_STATIC / "index.html").read_text(encoding="utf-8")
             return HTMLResponse(html)
 
     return app

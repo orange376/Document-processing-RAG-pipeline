@@ -5,6 +5,10 @@ __pycache__/
 dist/
 build/
 
+# Frontend (Vue SPA) — source + build committed; node_modules ignored
+frontend/node_modules/
+!frontend/dist/
+
 # Environment
 .env
 .venv/
