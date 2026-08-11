@@ -32,8 +32,14 @@ def _get_model() -> object:
             from pix2tex.cli import LatexOCR
 
             # pix2tex 默认 no_cuda=True（强制 CPU）。显式允许 CUDA，
-            # 公式识别在 GPU 机器上快 5-10 倍。
-            args = Munch({"no_cuda": not torch.cuda.is_available()})
+            # 公式识别在 GPU 机器上快 5-10 倍。需带全默认键（pix2tex 直接
+            # 访问 arguments.config / arguments.checkpoint）。
+            args = Munch({
+                "config": "settings/config.yaml",
+                "checkpoint": "checkpoints/weights.pth",
+                "no_cuda": not torch.cuda.is_available(),
+                "no_resize": False,
+            })
             _MODEL = LatexOCR(args)
     return _MODEL
 
