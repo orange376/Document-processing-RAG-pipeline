@@ -81,6 +81,21 @@ def _unpack_bbox(b):
     return tuple(b)
 
 
+def _release_gpu_memory() -> None:
+    """Free cached GPU memory after a heavy stage (paddle/torch leave buffers).
+
+    Cheap no-op on CPU-only machines; on a GPU box it prevents fragmentation
+    building up across the layout → OCR → embed stages on a tight 8GB card.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 class PipelineOrchestrator:
     """文档处理流水线主编排器
 
@@ -170,6 +185,7 @@ class PipelineOrchestrator:
         if self._layout_detector:
             self._layout_detector.unload()
         self._layout_detector = None
+        _release_gpu_memory()
         logger.info("[stage] layout_analysis: %.2fs", time.perf_counter() - t0)
 
         # === 阶段 2.5: 图表描述 + 表格结构恢复（Qwen-VL） ===
@@ -276,6 +292,7 @@ class PipelineOrchestrator:
             self._embedding_engine.unload()
             self._embedding_engine = None
             indexed = await asyncio.to_thread(self._vector_store.index_chunks, chunks)
+            _release_gpu_memory()
             logger.info("[stage] embed+index: %.2fs (indexed=%d)", time.perf_counter() - t0, indexed)
         except Exception:
             logger.exception("Embedding / indexing failed for %s", path)
@@ -625,19 +642,26 @@ class PipelineOrchestrator:
                     completed += 1
                     return
 
-                prompt = (
-                    "请详细描述这张图片的内容。"
-                    "如果是架构图、流程图、用例图、ER图或图表，"
-                    "请用中文仔细描述图中的节点、箭头、关系、层次结构、"
-                    "数据流向等，使读者能够仅凭文字完全理解图表含义。"
-                    "如果是普通图片或照片，请简要描述内容。"
-                    "请直接用中文回复，不要加前缀。"
-                )
-                description = await LLMClient(provider="qwen").chat_with_image(
-                    prompt,
-                    img_bytes,
-                    system="你是一个图表理解专家。将图片内容用中文详细描述。",
-                )
+                from src.cache.redis_cache import RedisCache
+
+                cache = RedisCache()
+                description = cache.get_vl_crop(img_bytes)
+                if description is None:
+                    prompt = (
+                        "请详细描述这张图片的内容。"
+                        "如果是架构图、流程图、用例图、ER图或图表，"
+                        "请用中文仔细描述图中的节点、箭头、关系、层次结构、"
+                        "数据流向等，使读者能够仅凭文字完全理解图表含义。"
+                        "如果是普通图片或照片，请简要描述内容。"
+                        "请直接用中文回复，不要加前缀。"
+                    )
+                    description = await LLMClient(provider="qwen").chat_with_image(
+                        prompt,
+                        img_bytes,
+                        system="你是一个图表理解专家。将图片内容用中文详细描述。",
+                    )
+                    if description:
+                        cache.set_vl_crop(img_bytes, description)
 
                 if description and len(description.strip()) > 10:
                     x0, y0, x1, y1 = bbox_coords
@@ -672,7 +696,13 @@ class PipelineOrchestrator:
     async def _recognize_table(self, img_bytes: bytes) -> str | None:
         """Recognize a table image via Qwen-VL and return markdown table format."""
         try:
+            from src.cache.redis_cache import RedisCache
             from src.generation.llm_client import LLMClient
+
+            cache = RedisCache()
+            cached = cache.get_vl_crop(img_bytes)
+            if cached is not None:
+                return cached.strip() if "NOT_A_TABLE" not in cached.upper() else None
 
             llm = LLMClient(provider="qwen")
             prompt = (
@@ -685,6 +715,8 @@ class PipelineOrchestrator:
                 img_bytes,
                 system="你是一个表格结构识别专家。将表格图片转换为 Markdown 表格。",
             )
+            if result:
+                cache.set_vl_crop(img_bytes, result)
             if result and "NOT_A_TABLE" not in result.upper():
                 return result.strip()
         except Exception:

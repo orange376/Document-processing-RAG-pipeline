@@ -32,6 +32,7 @@ _EMBED_TTL = 7 * 24 * 3600    # 7 days
 _RERANK_TTL = 3600            # 1 hour
 _ANSWER_TTL = 3600            # 1 hour
 _REWRITE_TTL = 7 * 24 * 3600  # 7 days — the same query is re-asked repeatedly
+_VL_CROP_TTL = 7 * 24 * 3600  # 7 days — re-processing the same doc reuses VL results
 
 
 # Module-level flag — only try connecting once per process lifetime
@@ -100,6 +101,24 @@ class RedisCache:
         """Cache *score* for a (query, chunk_id) pair."""
         key = f"rag:rerank:{_hash_pair(query, chunk_id)}"
         self._set(key, str(score), ttl=_RERANK_TTL)
+
+    # ------------------------------------------------------------------
+    # Qwen-VL crop-result cache (figure descriptions / table markdown)
+    # ------------------------------------------------------------------
+
+    def get_vl_crop(self, img_bytes: bytes) -> str | None:
+        """Return a cached Qwen-VL result for *img_bytes*, or None.
+
+        Keyed on a hash of the (compressed) crop image, so re-processing the
+        same document region hits without another API call.
+        """
+        key = f"rag:vl:crop:{_sha256_bytes(img_bytes)}"
+        return self._get(key)
+
+    def set_vl_crop(self, img_bytes: bytes, text: str) -> None:
+        """Cache a Qwen-VL result for *img_bytes*."""
+        key = f"rag:vl:crop:{_sha256_bytes(img_bytes)}"
+        self._set(key, text, ttl=_VL_CROP_TTL)
 
     # ------------------------------------------------------------------
     # Query-rewrite cache
@@ -197,6 +216,10 @@ def get_cache() -> RedisCache:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 def _hash_pair(a: str, b: str) -> str:
