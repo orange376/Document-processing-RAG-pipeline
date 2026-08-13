@@ -19,6 +19,10 @@ from src.retrieval.reranker import Reranker
 
 logger = logging.getLogger(__name__)
 
+# How many top hybrid candidates the cross-encoder re-ranks. Two-stage pattern:
+# fast bi-encoder retrieves 30, cross-encoder precision-re-ranks only this many.
+RERANK_POOL = 10
+
 # Function words that carry no domain signal for query expansion.
 _STOPWORDS = frozenset(
     "的 了 是 在 和 与 及 或 等 中 上 下 为 对 以 将 从 到 通过 包括 以及 采用 "
@@ -127,9 +131,15 @@ class Retriever:
         )
         # Require a few real terms — a single stray token adds noise, not signal.
         rerank_query = f"{query} {' '.join(terms)}".strip() if len(terms) >= 3 else query
+
+        # Two-stage retrieval: the fast hybrid search pre-filters to a small
+        # pool, and the cross-encoder only re-ranks that pool — "cross-encoder
+        # accuracy at bi-encoder speed". Scoring all 30 pairs was ~2/3 of the
+        # retrieval time for a marginal recall gain.
+        pool = candidates[:RERANK_POOL]
         try:
             reranked: list[SearchResult] = self._reranker.rerank(
-                rerank_query, candidates, top_k=top_k
+                rerank_query, pool, top_k=top_k
             )
         except Exception:
             logger.exception(

@@ -155,7 +155,8 @@ class TestRetrieverRetrieve:
         results = retriever.retrieve("query", [0.1] * 1024)
 
         assert len(results) == 10
-        mock_reranker.rerank.assert_called_once_with("query", candidates, top_k=10)
+        # 两阶段：cross-encoder 只精排混合检索 top-10 池
+        mock_reranker.rerank.assert_called_once_with("query", candidates[:10], top_k=10)
 
 
 class TestRetrieverGracefulDegradation:
