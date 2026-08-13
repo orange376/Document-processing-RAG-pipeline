@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # === Vector Store ===
     qdrant_collection: str = "documents_v2"  # bge-base-zh 768 维对应 collection
     embedding_dim: int = 768
+    # Qdrant server URL — empty = local file mode; set (e.g. http://qdrant:6333
+    # in Docker, or http://localhost:6333 for a standalone server) for
+    # multi-process / higher-concurrency access.
+    qdrant_url: str = ""
 
     # === GPU ===
     device: str = "cuda"  # "cuda" | "cpu"

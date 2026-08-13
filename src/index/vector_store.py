@@ -27,8 +27,14 @@ def _get_qdrant_client(db_path: str) -> object:
         if _QDRANT_CLIENT is None:
             from qdrant_client import QdrantClient
 
-            Path(db_path).mkdir(parents=True, exist_ok=True)
-            _QDRANT_CLIENT = QdrantClient(path=db_path)
+            s = get_settings()
+            if s.qdrant_url:
+                # Server mode — multi-process access, higher concurrency.
+                _QDRANT_CLIENT = QdrantClient(url=s.qdrant_url)
+            else:
+                # Local file mode (default) — file-locked, single process.
+                Path(db_path).mkdir(parents=True, exist_ok=True)
+                _QDRANT_CLIENT = QdrantClient(path=db_path)
     return _QDRANT_CLIENT
 
 
