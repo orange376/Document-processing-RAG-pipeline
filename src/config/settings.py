@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # === GPU ===
     device: str = "cuda"  # "cuda" | "cpu"
 
+    # === 启动内存 ===
+    # 预热 embed + reranker 模型（常驻内存 +1~2GB + 显存 1.6GB）。
+    # false = 省内存（首次请求现场加载模型，慢 3-5s）；true = 首次查询快。
+    warmup_models: bool = False
+
     # === Confidence Thresholds ===
     confidence_threshold_accept: float = 0.75
     confidence_threshold_reject: float = 0.40

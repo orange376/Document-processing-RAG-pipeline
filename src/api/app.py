@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from src.config import get_settings
 from src.utils import setup_logging
 
 from .auth import verify_token, get_limiter
@@ -30,17 +31,21 @@ setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """App lifespan: warm inference models in the background at startup.
+    """App lifespan: optionally warm inference models at startup.
 
-    The embed + reranker models load lazily on first use, which costs ~33s on
-    the first query after a restart. Loading them in the background at startup
-    moves that cost off the critical path without blocking API startup.
+    The embed + reranker models load lazily on first use. Pre-warming them at
+    startup makes the first query fast (~+3-5s on the first call instead) but
+    keeps ~1-2GB RAM + 1.6GB GPU resident. Off by default — set
+    ``WARMUP_MODELS=true`` only if you query frequently and can spare the memory.
     """
-    warmup_task = asyncio.create_task(asyncio.to_thread(query.warmup))
+    warmup_task = None
+    if get_settings().warmup_models:
+        warmup_task = asyncio.create_task(asyncio.to_thread(query.warmup))
     try:
         yield
     finally:
-        warmup_task.cancel()
+        if warmup_task is not None:
+            warmup_task.cancel()
 
 
 def create_app() -> FastAPI:
