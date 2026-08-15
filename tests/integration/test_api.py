@@ -25,7 +25,15 @@ from src.pipeline import ProcessingResult
 
 @pytest.fixture
 def app():
-    """Create the FastAPI application."""
+    """Create the FastAPI application, isolated from persisted disk state.
+
+    ``upload._load_task_db()`` runs at import and would otherwise load real
+    tasks from ``data/uploads/task_db.json`` into the review endpoints — clear
+    it so tests start from a known-empty store.
+    """
+    from src.api.routers.upload import task_store
+
+    task_store.clear()
     return create_app()
 
 
@@ -509,7 +517,7 @@ class TestReview:
 
         response = client.post(
             "/api/v1/review/reject_test/approve",
-            json={"action": "reject"},
+            json={"action": "reject", "reason": "测试拒绝原因"},
         )
         assert response.status_code == 200
         data = response.json()
