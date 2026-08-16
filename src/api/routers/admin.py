@@ -21,12 +21,13 @@ async def queue_status() -> dict:
     ``max_concurrent``), ``waiting`` lists task_ids in FIFO order still
     awaiting a free slot. Useful for the frontend to render "排队中第 N 位".
     """
-    from src.api.routers.upload import _get_processing_queue_or_none
+    from src.api.routers.upload import MAX_CONCURRENT, _get_processing_queue_or_none
 
     queue = _get_processing_queue_or_none()
     if queue is None:
+        # Queue not created yet (lazy per-loop init) — report the configured cap.
         return {
-            "max_concurrent": 0,
+            "max_concurrent": MAX_CONCURRENT,
             "running": [],
             "running_count": 0,
             "waiting": [],
