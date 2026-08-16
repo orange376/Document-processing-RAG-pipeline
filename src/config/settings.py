@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # false = 省内存（首次请求现场加载模型，慢 3-5s）；true = 首次查询快。
     warmup_models: bool = False
 
+    # === 并发处理 ===
+    # 同时处理的文档数上限。超出部分进入 FIFO 排队（"排队中"状态）。
+    # 限制并发的目的是避免多个文档同时加载 PP-DocLayoutV3 / easyocr /
+    # embedding 模型导致内存/显存超限——每套模型约 1~2GB 内存 + GPU。
+    max_concurrent_processing: int = 2
+
     # === Confidence Thresholds ===
     confidence_threshold_accept: float = 0.75
     confidence_threshold_reject: float = 0.40

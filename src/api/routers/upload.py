@@ -69,6 +69,112 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
+# Bounded-concurrency processing queue
+# ---------------------------------------------------------------------------
+# Documents are processed in the background. Without a bound, N uploads spawn
+# N concurrent PipelineOrchestrator runs, each loading its own copy of
+# PP-DocLayoutV3 + easyocr + embedding models — an 8-upload burst can OOM a
+# tight 16GB RAM / 8GB VRAM box. We cap concurrent processing (default 2) and
+# keep the rest FIFO-queued ("排队中").
+#
+# IMPORTANT: asyncio.Queue/Semaphore must be constructed inside a *running*
+# event loop, and uvicorn's loop is not the same object as each test's
+# TestClient loop. So the queue is created lazily per-loop (keyed by loop id)
+# instead of at module import — a module-level primitive would bind to
+# whichever loop touched it first and then raise RuntimeError on the next one.
+MAX_CONCURRENT = max(1, _settings_for_db.max_concurrent_processing)
+
+_processing_queues: dict[int, "ProcessingQueue"] = {}
+
+
+class ProcessingQueue:
+    """FIFO, bounded-concurrency scheduler for document background processing.
+
+    A fixed pool of workers pulls task_ids off an asyncio.Queue; at most
+    ``max_concurrent`` documents are processed at once and the rest wait in
+    line. Running / waiting state is tracked so the frontend can show a real
+    queue position instead of a fake "processing".
+    """
+
+    def __init__(self, max_concurrent: int) -> None:
+        self.max_concurrent = max_concurrent
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._waiting: list[str] = []  # mirrors queue contents, FIFO
+        self._running: set[str] = set()
+        self._workers: list[asyncio.Task] = [
+            asyncio.create_task(self._worker()) for _ in range(max_concurrent)
+        ]
+
+    # -- lifecycle ----------------------------------------------------------
+    def submit(self, task_id: str) -> None:
+        """Queue a task for processing (FIFO)."""
+        self._waiting.append(task_id)
+        self._queue.put_nowait(task_id)
+
+    # -- stats --------------------------------------------------------------
+    @property
+    def running(self) -> list[str]:
+        return list(self._running)
+
+    @property
+    def waiting(self) -> list[str]:
+        return list(self._waiting)
+
+    @property
+    def running_count(self) -> int:
+        return len(self._running)
+
+    @property
+    def waiting_count(self) -> int:
+        return len(self._waiting)
+
+    def is_processing(self, task_id: str) -> bool:
+        return task_id in self._running
+
+    def position(self, task_id: str) -> int | None:
+        """1-based position in the waiting line, or None if not waiting."""
+        try:
+            return self._waiting.index(task_id) + 1
+        except ValueError:
+            return None
+
+    # -- internals ----------------------------------------------------------
+    async def _worker(self) -> None:
+        while True:
+            task_id = await self._queue.get()
+            try:
+                try:
+                    self._waiting.remove(task_id)
+                except ValueError:
+                    pass
+                self._running.add(task_id)
+                task = task_store.get(task_id)
+                if task is not None:
+                    try:
+                        await _process_document(task_id, task.get("file_path", ""))
+                    except Exception:
+                        logger.exception("queue worker: processing %s crashed", task_id)
+            finally:
+                self._running.discard(task_id)
+                self._queue.task_done()
+
+
+def _get_processing_queue() -> ProcessingQueue:
+    """Return the ProcessingQueue for the currently running event loop."""
+    loop = asyncio.get_running_loop()
+    queue = _processing_queues.get(id(loop))
+    if queue is None:
+        queue = ProcessingQueue(MAX_CONCURRENT)
+        _processing_queues[id(loop)] = queue
+    return queue
+
+
+def _get_processing_queue_or_none() -> ProcessingQueue | None:
+    """Return the queue for this loop without creating one (read-only checks)."""
+    return _processing_queues.get(id(asyncio.get_running_loop()))
+
+
+# ---------------------------------------------------------------------------
 # Background processing
 # ---------------------------------------------------------------------------
 def _make_task_entry(
@@ -250,13 +356,15 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
     )
     _save_task_db()
 
-    # Kick off background processing
-    asyncio.create_task(_process_document(task_id, file_path))
+    # Kick off background processing via the bounded-concurrency queue
+    queue = _get_processing_queue()
+    queue.submit(task_id)
 
     return UploadResponse(
         task_id=task_id,
         status="queued",
         message="Document queued for processing.",
+        queue_position=queue.position(task_id),
     )
 
 
@@ -266,6 +374,7 @@ async def upload_document(file: UploadFile = File(...)) -> UploadResponse:
 )
 async def list_documents() -> list[dict]:
     """Return a summary of every upload task (newest first)."""
+    queue = _get_processing_queue_or_none()
     entries = []
     for task_id, task in task_store.items():
         entries.append({
@@ -279,6 +388,8 @@ async def list_documents() -> list[dict]:
             "needs_review": task.get("needs_review", False),
             "error": task.get("error", ""),
             "file_type": task.get("file_type", ""),
+            "queue_position": queue.position(task_id) if queue else None,
+            "is_processing": queue.is_processing(task_id) if queue else False,
         })
     return sorted(entries, key=lambda e: e["task_id"], reverse=True)
 
@@ -293,6 +404,7 @@ async def get_document_status(task_id: str) -> UploadResponse:
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
+    queue = _get_processing_queue_or_none()
     return UploadResponse(
         task_id=task_id,
         status=task["status"],
@@ -302,6 +414,8 @@ async def get_document_status(task_id: str) -> UploadResponse:
         chunk_count=task.get("chunk_count", 0),
         total_pages=task.get("total_pages", 0),
         needs_review=task.get("needs_review", False),
+        queue_position=queue.position(task_id) if queue else None,
+        is_processing=queue.is_processing(task_id) if queue else False,
     )
 
 

@@ -183,13 +183,14 @@ class StructureAwareChunker:
                     buffer_start_bbox = block.bbox
                 buffer += sub_text + "\n"
 
-                # Oversized buffer → split at a sentence break
+                # Oversized buffer → split at a paragraph/sentence break
                 if len(buffer) >= self.max_chunk_chars:
-                    split = self._find_split_point(buffer, self.max_chunk_chars)
+                    split, kind = self._find_split_point(buffer, self.max_chunk_chars)
                     chunks.append(self._make_chunk(
                         buffer[:split].strip(), filename, page.page_num,
                         section, "text", buffer_start_bbox,
                         layout_tree_path=list(heading_stack),
+                        chunk_level=kind,
                     ))
                     overlap_start = max(0, split - self.overlap)
                     buffer = buffer[overlap_start:]
@@ -274,17 +275,26 @@ class StructureAwareChunker:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _find_split_point(self, text: str, max_len: int) -> int:
-        """在 max_len 附近找到合适的切分点（优先段末对齐）。"""
+    def _find_split_point(self, text: str, max_len: int) -> tuple[int, str]:
+        """在 max_len 附近找到合适的切分点（优先段末对齐）。
+
+        Returns:
+            ``(pos, kind)`` — ``pos`` 为切分偏移，``kind`` 为切片级别：
+            ``"sentence"``（在句子标点「。！？」处切分）或 ``"paragraph"``
+            （段/行边界切分）。超长缓冲按句切分时，产生的块应标记为句子级。
+        """
         if len(text) <= max_len:
-            return len(text)
+            return len(text), "paragraph"
         candidate = max_len
-        for boundary in ["\n\n", "\n", "。", "！", "？"]:
+        kind = "paragraph"
+        for boundary, is_sentence in [("\n\n", False), ("\n", False),
+                                      ("。", True), ("！", True), ("？", True)]:
             pos = text.rfind(boundary, 0, max_len)
             if pos > max_len // 2:
                 candidate = max(candidate, pos + len(boundary))
+                kind = "sentence" if is_sentence else "paragraph"
                 break
-        return min(candidate, max_len)
+        return min(candidate, max_len), kind
 
     def _make_chunk(
         self, content: str, filename: str, page_num: int,

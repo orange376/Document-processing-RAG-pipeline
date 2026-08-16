@@ -304,20 +304,18 @@ async def reprocess_review(task_id: str) -> dict:
     if not file_path or not Path(file_path).exists():
         raise HTTPException(status_code=400, detail=f"原始文件不存在: {file_path}")
 
-    from src.api.routers.upload import _process_document
+    from src.api.routers.upload import _get_processing_queue
 
-    # Reset status and re-process
-    task["status"] = "processing"
+    # Reset status and re-process through the bounded-concurrency queue
+    task["status"] = "queued"
     task["needs_review"] = False
     task["error"] = ""
     _save_task_db()
 
-    # Re-process asynchronously
-    import asyncio
-    asyncio.create_task(_process_document(task_id, file_path))
+    _get_processing_queue().submit(task_id)
 
     return {
         "task_id": task_id,
-        "status": "processing",
+        "status": "queued",
         "message": "文档已重新加入处理队列",
     }

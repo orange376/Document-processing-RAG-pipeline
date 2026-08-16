@@ -81,14 +81,17 @@ def test_overlap_retains_tail():
 
 def test_fine_chunk_splits_sentences():
     chunker = StructureAwareChunker()
+    # Sentence-level splitting only triggers for buffers that exceed
+    # max_chunk_chars (2500) — a short block stays a single paragraph chunk.
+    sentence = "这是第一句话这是第一句话这是第一句话。这是第二句话这是第二句话这是第二句话。这是第三句话这是第三句话这是第三句话。"
     page = _make_page([
-        _make_block("这是第一句话这是第一句话这是第一句话。这是第二句话这是第二句话这是第二句话。这是第三句话这是第三句话这是第三句话。这是第四句话这是第四句话这是第四句话。"),
+        _make_block(sentence * 50),  # ~2850 chars → must be split at a sentence break
     ])
     doc = _make_doc("test.docx", [page])
     chunks = chunker.fine_chunk(doc)
     levels = [c.metadata.chunk_level for c in chunks if c.metadata]
-    assert "sentence" in levels
-    assert "paragraph" in levels
+    assert "sentence" in levels, f"expected a sentence-level chunk, got {levels}"
+    assert "paragraph" in levels, f"expected a paragraph-level chunk, got {levels}"
 
 
 def test_fine_chunk_skips_formula():

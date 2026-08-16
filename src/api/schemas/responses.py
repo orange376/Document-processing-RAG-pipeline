@@ -16,6 +16,8 @@ class UploadResponse(BaseModel):
     chunk_count: int = 0
     total_pages: int = 0
     needs_review: bool = False
+    queue_position: int | None = None  # position in the waiting queue (None if not waiting)
+    is_processing: bool = False  # True while the pipeline is actively processing this task
 
 
 class ParseBlock(BaseModel):

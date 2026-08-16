@@ -33,7 +33,15 @@
     <el-container>
       <el-header class="header">
         <div class="header-title">{{ $route.meta.title }}</div>
-        <el-tag size="small" type="success" effect="plain">服务运行中</el-tag>
+        <div class="header-right">
+          <el-tag v-if="!healthCheck" size="small" type="info" effect="plain">
+            <el-icon class="spin"><Loading /></el-icon>&nbsp;检查服务…
+          </el-tag>
+          <el-tag v-else :type="healthCheck.ok ? 'success' : 'danger'" effect="plain" size="small">
+            <span class="dot" :class="healthCheck.ok ? 'dot-ok' : 'dot-bad'"></span>
+            {{ healthCheck.ok ? '服务运行中' : '服务异常' }}
+          </el-tag>
+        </div>
       </el-header>
       <el-main class="main">
         <router-view />
@@ -43,7 +51,22 @@
 </template>
 
 <script setup>
-// Element Plus icons are globally registered in main.js
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+
+const healthCheck = ref(null)
+let healthTimer = null
+
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/v1/health')
+    healthCheck.value = { ok: r.ok }
+  } catch {
+    healthCheck.value = { ok: false }
+  }
+}
+
+onMounted(() => { checkHealth(); healthTimer = setInterval(checkHealth, 15000) })
+onBeforeUnmount(() => { if (healthTimer) clearInterval(healthTimer) })
 </script>
 
 <style>
@@ -58,5 +81,11 @@ body { margin: 0; background: #f5f7fa; font-family: -apple-system, 'Segoe UI', '
 .nav-menu .el-menu-item.is-active { background: #409eff; color: #fff; }
 .header { display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e4e7ed; }
 .header-title { font-size: 16px; font-weight: 600; }
+.header-right { display: flex; align-items: center; }
+.spin { animation: rotating 1.2s linear infinite; }
+@keyframes rotating { from { transform: rotate(0) } to { transform: rotate(360deg) } }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.dot-ok { background: #67c23a; box-shadow: 0 0 4px #67c23a; }
+.dot-bad { background: #f56c6c; box-shadow: 0 0 4px #f56c6c; }
 .main { padding: 20px; }
 </style>
